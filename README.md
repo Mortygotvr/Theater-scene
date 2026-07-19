@@ -4,6 +4,14 @@
 
 ---
 
+## 📌 Prerequisites
+
+> [!IMPORTANT]
+> **Theater Scene requires [Theater Reader](https://github.com/Mortygotvr/Theater-reader) to function.**
+> Theater Reader acts as the central chat aggregator, TTS trigger, and WebSocket event broadcaster for stream interactions.
+
+---
+
 ## 🚀 Features
 
 - 🎮 **Interactive 3D WebGL Physics Engine**: Built with Three.js for interactive throwables, ragdoll/static entities, and particle streams.
