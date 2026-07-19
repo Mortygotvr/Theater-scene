@@ -1,0 +1,1891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Theatre - Settings Controller</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script>
+        // Bypassing localStorage security errors in sandbox and custom browser environments
+        (function() {
+            try {
+                var test = window.localStorage;
+            } catch (e) {
+                var store = {};
+                Object.defineProperty(window, 'localStorage', {
+                    value: {
+                        getItem: function(key) { return store[key] || null; },
+                        setItem: function(key, val) { store[key] = String(val); },
+                        removeItem: function(key) { delete store[key]; },
+                        clear: function() { store = {}; },
+                        key: function(i) { return Object.keys(store)[i] || null; },
+                        get length() { return Object.keys(store).length; }
+                    },
+                    writable: true,
+                    configurable: true
+                });
+            }
+        })();
+    </script>
+    <script>
+        // Setup PySide6 WebChannel globally for the main overlay
+        window.captureCallbacks = {};
+        if (typeof qt !== 'undefined' && !window.QWebChannelInitDone) {
+            window.QWebChannelInitDone = true;
+            const s = document.createElement('script');
+            s.src = 'qrc:///qtwebchannel/qwebchannel.js';
+            s.onload = () => {
+                new QWebChannel(qt.webChannelTransport, function (channel) {
+                    window.qtBridge = channel.objects.qtBridge;
+                    if (window.qtBridge && window.qtBridge.captured) {
+                        window.qtBridge.captured.connect(function(pid, base64) {
+                            if (window.captureCallbacks[pid]) {
+                                window.captureCallbacks[pid](base64);
+                            }
+                        });
+                    }
+                });
+            };
+            document.head.appendChild(s);
+        }
+    </script>
+</head>
+<body class="config-body" x-data="settingsApp" x-init="isOpen = true">
+    <!-- Mouseover Status Overlay -->
+    <div id="status-overlay" style="opacity: 1; pointer-events: auto;">
+        <div class="status-indicator">
+            <span class="dot" id="backend-status-dot" style="color: #ffaa00;"></span>
+            <span id="backend-status-msg" style="color: #ffaa00;">Backend: Connecting...</span>
+        </div>
+        <div class="status-indicator">
+            <span class="dot" id="obs-status-dot" style="color: #ff4444;"></span>
+            <span id="obs-status-msg" style="color: #ff4444;">OBS: Offline</span>
+        </div>
+    </div>
+
+    <!-- Configure UI Overlay (Always active on Settings Page) -->
+    <div id="ui-layer" class="active" style="position: relative; min-height: 100vh; opacity: 1; transform: none; pointer-events: auto; display: flex; justify-content: center; align-items: center;">
+        <div id="settings-panel">
+            <div class="tabs">
+                <button class="tab-button" :class="{ 'active': activeTab === 'object' }" @click="activeTab = 'object'">Object</button>
+                <button class="tab-button" :class="{ 'active': activeTab === 'source' }" @click="activeTab = 'source'">Source</button>
+                <button class="tab-button" :class="{ 'active': activeTab === 'trigger' }" @click="activeTab = 'trigger'">Trigger and Action</button>
+                <button class="tab-button" :class="{ 'active': activeTab === 'preferences' }" @click="activeTab = 'preferences'">Preference</button>
+                <button id="save-all-btn" @click="saveAll()">💾 Save All</button>
+            </div>
+            
+            <div class="tab-content" :class="{ 'active': activeTab === 'object' }" x-show="activeTab === 'object'" id="tab-object">
+                <h3>Object Inventory</h3>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" x-model="config.hasFloor" @change="saveConfigRaw()"> Enable Physics Floor
+                    </label>
+                </div>
+                <div class="button-row" style="display: flex; flex-wrap: wrap; gap: 10px;">
+                    <button class="action-btn" @click="addObject('image')">+ Add Throwable</button>
+                    <button class="action-btn" @click="addObject('audio')">+ Add Audio</button>
+                    <button class="action-btn" style="background: rgba(0,200,255,0.15); border-color: #00c8ff; color: #00c8ff;" @click="addObject('snapshot')">📷 Add Snapshot</button>
+                    <button class="action-btn" style="background: rgba(0,170,255,0.18); border-color: #00aaff; color: #66ccff;" @click="addObject('webgl-water')">🌀 Add WebGL Water</button>
+                    <button class="action-btn" style="background: rgba(255,85,0,0.18); border-color: #ff5500; color: #ff8833;" @click="addObject('webgl-fire')">🔥 Add WebGL Fire</button>
+                    <button class="action-btn" style="background: rgba(180,220,255,0.18); border-color: #b4dcff; color: #b4dcff;" @click="addObject('webgl-lightning')">⚡ Add WebGL Lightning</button>
+                </div>
+                
+                <div id="object-inventory">
+                    <template x-for="(obj, index) in config.objects" :key="obj.id">
+                        <div class="object-sub-window" :class="'type-' + obj.type" :data-id="obj.id" x-data="{ collapsed: true }">
+                            <div class="window-header" style="cursor: pointer; user-select: none;" @click="collapsed = !collapsed">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="font-size: 11px; transition: transform 0.2s; display: inline-block; color: #aaa;" :style="collapsed ? '' : 'transform: rotate(90deg);'">▶</span>
+                                    <h4 style="margin: 0; color: #fff;" x-text="(obj.name || 'Unnamed') + ' (' + (obj.type === 'audio' ? 'Audio' : (obj.type === 'snapshot' ? 'Camera Snapshot' : (obj.type === 'webgl-water' ? 'WebGL Water' : (obj.type === 'webgl-fire' ? 'WebGL Fire' : (obj.type === 'webgl-lightning' ? 'WebGL Lightning' : 'Throwable'))))) + ')'"></h4>
+                                </div>
+                                <button class="trash-btn" style="padding: 5px 10px; font-size: 12px; border-radius: 4px;" @click.stop="deleteObject(obj.id)">Delete</button>
+                            </div>
+                            <div x-show="!collapsed" style="margin-top: 15px;">
+                            
+                            <div class="setting-group" style="flex-direction:row; gap:10px;">
+                                <div style="flex:1;">
+                                    <label>Identifier Name</label>
+                                    <input type="text" x-model="obj.name" placeholder="e.g. Banana" style="width:100%;" @change="saveConfigRaw()">
+                                </div>
+                            </div>
+                            
+                            <!-- If type is image -->
+                            <div x-show="obj.type === 'image'">
+                                    <div style="display:flex; gap:15px; margin-bottom:10px;">
+                                        <div style="flex:0.6; display:flex; flex-direction:column; gap:10px;">
+                                            <label>Asset File (Image or GIF)</label>
+                                            <input type="file" accept="image/*" @change="uploadImageFile($event, obj)">
+                                            <div style="font-size:12px; color:#aaa;">(GIFs stay intact, PNG/JPG are compressed for speed)</div>
+                                        </div>
+                                        <div style="flex:0.4; display:flex; flex-direction:column; align-items:center; gap:5px;" class="preview-container">
+                                            <div style="width:240px; height:240px; border:1px solid #444; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative;" class="preview-box">
+                                                <img :src="obj.imageSrc" x-show="obj.imageSrc" :style="'width: ' + (obj.width || 100) + 'px; height: ' + (obj.height || 100) + 'px; max-width: 100%; max-height: 100%; object-fit: contain;'" />
+                                                <span style="color:#666; font-size:12px;" x-show="!obj.imageSrc">No Preview</span>
+                                            </div>
+                                            <div style="width:100%;" x-show="obj.imageSrc">
+                                                <label style="font-size:10px; color:#aaa; margin-bottom: 2px; text-align: center; display: block;">Size: <span x-text="obj.width || 100"></span>x<span x-text="obj.height || 100"></span>px | Scale (<span x-text="parseFloat(obj.scale || 1.0).toFixed(2)"></span>x)</label>
+                                                <input type="range" min="0.1" max="3.0" step="0.05" x-model="obj.scale" 
+                                                       @input="
+                                                           if (!obj.originalWidth) obj.originalWidth = obj.width || 100;
+                                                           if (!obj.originalHeight) obj.originalHeight = obj.height || 100;
+                                                           obj.width = Math.round(obj.originalWidth * parseFloat(obj.scale || 1.0)); 
+                                                           obj.height = Math.round(obj.originalHeight * parseFloat(obj.scale || 1.0));
+                                                           saveConfigRaw();
+                                                       " style="width: 100%;">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="setting-group" style="margin-bottom:10px;">
+                                        <label>Target Destination</label>
+                                        <select x-model="obj.target" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid #555; border-radius: 4px;" @change="saveConfigRaw()">
+                                            <option value="avatar">Avatar (Default)</option>
+                                            <template x-for="t in config.targets" :key="t.id">
+                                                <option :value="t.name || t.id" x-text="t.name"></option>
+                                            </template>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="setting-group" style="margin-bottom:10px;">
+                                        <label>Throw Source Action</label>
+                                        <div class="pill-group" style="display:flex; flex-wrap:wrap; gap:5px;">
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].action === 'throwable' }" @click="config.objects[index].action = 'throwable'; saveConfigRaw()">Throw at Target</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].action === 'throw-front' }" @click="config.objects[index].action = 'throw-front'; saveConfigRaw()">Throw Forward (From Screen)</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].action === 'swirl' }" @click="config.objects[index].action = 'swirl'; saveConfigRaw()">Swirl Throw</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].action === 'drop' }" @click="config.objects[index].action = 'drop'; saveConfigRaw()">Drop straight down</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].action === 'rain' }" @click="config.objects[index].action = 'rain'; saveConfigRaw()">Rain from above</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="setting-group" style="margin-bottom:15px;">
+                                        <label>Spawn Source Grid (Randomized Origins)</label>
+                                        <div style="display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px); gap: 8px; background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; width: fit-content; border: 1px solid #444;">
+                                            <template x-for="pos in ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br']">
+                                                <input type="checkbox" :checked="obj.spawnPoints && obj.spawnPoints.includes(pos)"
+                                                       @change="
+                                                           if ($el.checked) {
+                                                               if (!obj.spawnPoints) obj.spawnPoints = [];
+                                                               if (!obj.spawnPoints.includes(pos)) obj.spawnPoints.push(pos);
+                                                           } else {
+                                                               obj.spawnPoints = obj.spawnPoints.filter(p => p !== pos);
+                                                           }
+                                                           saveConfigRaw();
+                                                       " :title="pos" style="width:20px; height:20px; cursor:pointer;">
+                                            </template>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="setting-group" style="margin-bottom:10px;">
+                                        <label>Target Collision Behavior</label>
+                                        <div class="pill-group">
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].collision === 'bounce' }" @click="config.objects[index].collision = 'bounce'; saveConfigRaw()">Bounce Off</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].collision === 'stick' }" @click="config.objects[index].collision = 'stick'; saveConfigRaw()">Stick to Target</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].collision === 'squish' }" @click="config.objects[index].collision = 'squish'; saveConfigRaw()">Squish & Slide Down</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].collision === 'pixel-shatter' }" @click="config.objects[index].collision = 'pixel-shatter'; saveConfigRaw()">Pixel Shatter</div>
+                                            <div class="pill-btn" :class="{ 'active': config.objects[index].collision === 'pass' }" @click="config.objects[index].collision = 'pass'; saveConfigRaw()">Pass Through</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="setting-group" style="margin-bottom:10px; display:flex; gap:15px;">
+                                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #fff; font-size: 13px;">
+                                            <input type="checkbox" x-model="obj.snapBottom" @change="saveConfigRaw()" style="width: 16px; height: 16px;"> Snap Bottom to Target Center
+                                        </label>
+                                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #fff; font-size: 13px;">
+                                            <input type="checkbox" x-model="obj.randomMirror" @change="saveConfigRaw()" style="width: 16px; height: 16px;"> Random Mirroring
+                                        </label>
+                                    </div>
+                            </div>
+
+                            
+                            <!-- If type is audio -->
+                            <template x-if="obj.type === 'audio'">
+                                <div class="setting-group" style="flex-direction:row; gap:10px; padding-top:10px;">
+                                    <div style="flex:1;">
+                                        <label>Audio File</label>
+                                        <input type="file" accept="audio/*" @change="uploadAudioFile($event, obj)">
+                                        <div class="start-sound-status" style="font-size:12px; color:#aaa; margin-top:5px;" x-text="obj.startSound ? 'Sound loaded' : 'No sound loaded'" :style="obj.startSound ? 'color:#00ffcc;' : 'color:#aaa;'"></div>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <!-- If type is snapshot -->
+                            <template x-if="obj.type === 'snapshot'">
+                                <div style="padding-top:10px;">
+                                    <p style="font-size:11px; color:#aaa; margin:0 0 10px 0;">Captures a live screenshot from OBS at throw-time and cuts out the background using the tracking mask.</p>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">OBS Source to Capture</label>
+                                            <select style="width:100%; padding:10px; background:rgba(0,0,0,0.5); color:#fff; border:1px solid #555; border-radius:4px;"
+                                                x-model="obj.obsSource"
+                                                @change="saveConfigRaw()">
+                                                <option value="">Select a target source...</option>
+                                                <template x-for="t in config.targets" :key="t.id">
+                                                    <option :value="t.obsSource" x-text="t.name + (t.obsSource ? ' (' + t.obsSource + ')' : '')"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-bottom:10px;">
+                                        <label style="font-size:11px; color:#ccc;">Brightness Threshold (<span x-text="obj.brightnessThreshold !== undefined ? obj.brightnessThreshold : 40"></span>)</label>
+                                        <input type="range" min="0" max="255" step="1" x-model.number="obj.brightnessThreshold" @input="saveConfigRaw()" style="width:100%;">
+                                        <div style="font-size:10px; color:#888;">Pixels darker than this value become transparent. Higher = more aggressive cutout.</div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Object Height (px) — <span x-text="obj.targetHeight || 200"></span>px</label>
+                                            <input type="range" min="50" max="600" step="10" x-model.number="obj.targetHeight" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Target</label>
+                                            <select x-model="obj.target" style="width:100%; padding:10px; background:rgba(0,0,0,0.5); color:#fff; border:1px solid #555; border-radius:4px;" @change="saveConfigRaw()">
+                                                <option value="avatar">Avatar (Default)</option>
+                                                <template x-for="t in config.targets" :key="t.id">
+                                                    <option :value="t.name || t.id" x-text="t.name"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                     <div class="setting-group" style="margin-bottom:10px;">
+                                         <label>Throw Action</label>
+                                         <div class="pill-group" style="display:flex; flex-wrap:wrap; gap:5px;">
+                                             <div class="pill-btn" :class="{ 'active': obj.action === 'throwable' }" @click="obj.action = 'throwable'; saveConfigRaw()">Throw at Target</div>
+                                             <div class="pill-btn" :class="{ 'active': obj.action === 'throw-front' }" @click="obj.action = 'throw-front'; saveConfigRaw()">Throw Forward</div>
+                                             <div class="pill-btn" :class="{ 'active': obj.action === 'swirl' }" @click="obj.action = 'swirl'; saveConfigRaw()">Swirl</div>
+                                             <div class="pill-btn" :class="{ 'active': obj.action === 'drop' }" @click="obj.action = 'drop'; saveConfigRaw()">Drop</div>
+                                             <div class="pill-btn" :class="{ 'active': obj.action === 'rain' }" @click="obj.action = 'rain'; saveConfigRaw()">Rain</div>
+                                         </div>
+                                     </div>
+
+                                     <div class="setting-group" style="margin-bottom:15px;" x-show="obj.action === 'throwable'">
+                                         <label>Spawn Source Grid (Randomized Origins)</label>
+                                         <div style="display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px); gap: 8px; background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; width: fit-content; border: 1px solid #444;">
+                                             <template x-for="pos in ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br']">
+                                                 <input type="checkbox" :checked="obj.spawnPoints && obj.spawnPoints.includes(pos)"
+                                                        @change="
+                                                            if ($el.checked) {
+                                                                if (!obj.spawnPoints) obj.spawnPoints = [];
+                                                                if (!obj.spawnPoints.includes(pos)) obj.spawnPoints.push(pos);
+                                                            } else {
+                                                                obj.spawnPoints = obj.spawnPoints.filter(p => p !== pos);
+                                                            }
+                                                            saveConfigRaw();
+                                                        " :title="pos" style="width:20px; height:20px; cursor:pointer;">
+                                             </template>
+                                         </div>
+                                     </div>
+
+                                    <div class="setting-group" style="margin-bottom:10px;">
+                                        <label>Collision Behavior</label>
+                                        <div class="pill-group">
+                                            <div class="pill-btn" :class="{ 'active': obj.collision === 'bounce' }" @click="obj.collision = 'bounce'; saveConfigRaw()">Bounce Off</div>
+                                            <div class="pill-btn" :class="{ 'active': obj.collision === 'stick' }" @click="obj.collision = 'stick'; saveConfigRaw()">Stick</div>
+                                            <div class="pill-btn" :class="{ 'active': obj.collision === 'squish' }" @click="obj.collision = 'squish'; saveConfigRaw()">Squish</div>
+                                            <div class="pill-btn" :class="{ 'active': obj.collision === 'pixel-shatter' }" @click="obj.collision = 'pixel-shatter'; saveConfigRaw()">Pixel Shatter</div>
+                                            <div class="pill-btn" :class="{ 'active': obj.collision === 'pass' }" @click="obj.collision = 'pass'; saveConfigRaw()">Pass Through</div>
+                                        </div>
+                                    </div>
+
+                                    <div class="setting-group" style="margin-bottom:10px; display:flex; gap:15px;">
+                                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:#fff; font-size:13px;">
+                                            <input type="checkbox" x-model="obj.snapBottom" @change="saveConfigRaw()" style="width:16px; height:16px;"> Snap Bottom to Target
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:#fff; font-size:13px;">
+                                            <input type="checkbox" x-model="obj.randomMirror" @change="saveConfigRaw()" style="width:16px; height:16px;"> Random Mirroring
+                                        </label>
+                                    </div>
+
+                                    <div style="font-size:11px; padding:8px; background:rgba(0,200,255,0.08); border:1px solid rgba(0,200,255,0.25); border-radius:4px; color:#aaa; margin-bottom:10px;">
+                                        ⚠️ Requires OBS connected + tracking active. Mask mode uses the live pixel mask; Brightness mode works standalone.
+                                    </div>
+                                </div>
+                            </template>
+                               <!-- If type is webgl-water -->
+                            <template x-if="obj.type === 'webgl-water'">
+                                <div style="padding-top:10px;">
+                                    <p style="font-size:11px; color:#aaa; margin:0 0 10px 0;">WebGL Cartoon Water: a high-performance water stream featuring customizable white outlines, cel-shaded reflections, and fluid dynamics.</p>
+
+                                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px; background:rgba(0,0,0,0.25); padding:12px; border-radius:6px; border:1px solid rgba(255,255,255,0.08);">
+                                         <label style="font-size:11px; color:#00aaff; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase;">Water Color (RGBA Sliders)</label>
+                                         
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#ff4444; width:15px; font-weight:bold;">R</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorR" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorR !== undefined ? obj.colorR : 0"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#00ff88; width:15px; font-weight:bold;">G</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorG" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorG !== undefined ? obj.colorG : 170"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#00aaff; width:15px; font-weight:bold;">B</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorB" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorB !== undefined ? obj.colorB : 255"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#ffffff; width:15px; font-weight:bold;">A</span>
+                                             <input type="range" min="0.0" max="1.0" step="0.05" x-model.number="obj.colorA" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="parseFloat(obj.colorA !== undefined ? obj.colorA : 0.95).toFixed(2)"></span>
+                                         </div>
+
+                                         <div class="water-color-preview-box">
+                                             <div style="width:100%; height:100%; position:absolute; left:0; top:0;" 
+                                                  :style="{ backgroundColor: 'rgba(' + (obj.colorR !== undefined ? obj.colorR : 0) + ',' + (obj.colorG !== undefined ? obj.colorG : 170) + ',' + (obj.colorB !== undefined ? obj.colorB : 255) + ',' + (obj.colorA !== undefined ? obj.colorA : 0.95) + ')' }">
+                                             </div>
+                                         </div>
+                                    </div>
+                                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px; background:rgba(0,0,0,0.25); padding:12px; border-radius:6px; border:1px solid rgba(255,255,255,0.08);">
+                                          <label style="font-size:11px; color:#00aaff; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase;">Water Highlight Color (RGBA Sliders)</label>
+                                          
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#ff4444; width:15px; font-weight:bold;">R</span>
+                                              <input type="range" min="0" max="255" step="1" x-model.number="obj.color2R" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.color2R !== undefined ? obj.color2R : 100"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#00ff88; width:15px; font-weight:bold;">G</span>
+                                              <input type="range" min="0" max="255" step="1" x-model.number="obj.color2G" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.color2G !== undefined ? obj.color2G : 210"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#00aaff; width:15px; font-weight:bold;">B</span>
+                                              <input type="range" min="0" max="255" step="1" x-model.number="obj.color2B" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.color2B !== undefined ? obj.color2B : 255"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#ffffff; width:15px; font-weight:bold;">A</span>
+                                              <input type="range" min="0.0" max="1.0" step="0.05" x-model.number="obj.color2A" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="parseFloat(obj.color2A !== undefined ? obj.color2A : 0.85).toFixed(2)"></span>
+                                          </div>
+
+                                          <div class="water-color-preview-box">
+                                              <div style="width:100%; height:100%; position:absolute; left:0; top:0;" 
+                                                   :style="{ backgroundColor: 'rgba(' + (obj.color2R !== undefined ? obj.color2R : 100) + ',' + (obj.color2G !== undefined ? obj.color2G : 210) + ',' + (obj.color2B !== undefined ? obj.color2B : 255) + ',' + (obj.color2A !== undefined ? obj.color2A : 0.85) + ')' }">
+                                              </div>
+                                          </div>
+                                     </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Target Destination</label>
+                                            <select x-model="obj.target" style="width:100%; padding:10px; background:rgba(0,0,0,0.5); color:#fff; border:1px solid #555; border-radius:4px;" @change="saveConfigRaw()">
+                                                <option value="avatar">Avatar (Default)</option>
+                                                <template x-for="t in config.targets" :key="t.id">
+                                                    <option :value="t.name || t.id" x-text="t.name"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Outline Width (1-15) — <span x-text="Math.round(parseFloat(obj.borderThickness || 0.06) * 100)"></span></label>
+                                            <input type="range" min="0.01" max="0.15" step="0.01" x-model.number="obj.borderThickness" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Particle Size (px) — <span x-text="obj.fluidRadius || 15"></span>px</label>
+                                            <input type="range" min="5" max="500" step="1" x-model.number="obj.fluidRadius" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Flow Quantity (Particles) — <span x-text="obj.fluidCount || 150"></span></label>
+                                            <input type="range" min="30" max="1500" step="10" x-model.number="obj.fluidCount" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Duration — <span x-text="parseFloat((obj.fluidDuration !== undefined ? obj.fluidDuration : 6000) / 1000).toFixed(1)"></span>s</label>
+                                            <input type="range" min="1000" max="60000" step="500" x-model.number="obj.fluidDuration" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Flow Viscosity / Speed — <span x-text="parseFloat(obj.fluidViscosity || 0.5).toFixed(2)"></span></label>
+                                            <input type="range" min="0.1" max="1.5" step="0.05" x-model.number="obj.fluidViscosity" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Gravity — <span x-text="parseFloat(obj.fluidGravity !== undefined ? obj.fluidGravity : 0.8).toFixed(1)"></span></label>
+                                            <input type="range" min="0.0" max="2.0" step="0.1" x-model.number="obj.fluidGravity" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                         <div style="flex:1;">
+                                             <label style="font-size:11px; color:#ccc;">Stream Spawn Width (px) — <span x-text="obj.fluidWidth || 30"></span>px</label>
+                                             <input type="range" min="10" max="300" step="5" x-model.number="obj.fluidWidth" @input="saveConfigRaw()" style="width:100%;">
+                                         </div>
+                                         <div style="flex:1;">
+                                             <label style="font-size:11px; color:#ccc;">Drip Shrink Speed — <span x-text="obj.dripShrink !== undefined ? obj.dripShrink : 16"></span></label>
+                                             <input type="range" min="0" max="100" step="1" x-model.number="obj.dripShrink" @input="saveConfigRaw()" style="width:100%;">
+                                         </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                          <div style="flex:1;">
+                                              <label style="font-size:11px; color:#ccc;">Drip Through Mask (%) — <span x-text="obj.dripThroughPercent !== undefined ? obj.dripThroughPercent : 50"></span>%</label>
+                                              <input type="range" min="0" max="100" step="5" x-model.number="obj.dripThroughPercent" @input="saveConfigRaw()" style="width:100%;">
+                                          </div>
+                                          <div style="flex:1; display:flex; align-items:center; padding-top:15px;">
+                                              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:#fff; font-size:11px;">
+                                                  <input type="checkbox" x-model="obj.enableOutline" @change="saveConfigRaw()" style="width:16px; height:16px;"> Enable White Outline
+                                              </label>
+                                          </div>
+                                    </div>
+
+                                    <div class="setting-group" style="margin-bottom:10px;">
+                                        <label>Stream Flow Mode</label>
+                                        <div class="pill-group" style="display:flex; flex-wrap:wrap; gap:5px;">
+                                            <div class="pill-btn" :class="{ 'active': (obj.streamMode || 'grid') === 'grid' }" @click="obj.streamMode = 'grid'; saveConfigRaw()">Aim from Grid</div>
+                                            <div class="pill-btn" :class="{ 'active': obj.streamMode === 'top' }" @click="obj.streamMode = 'top'; saveConfigRaw()">Drop Straight Down</div>
+                                        </div>
+                                    </div>
+
+                                    <div class="setting-group" style="margin-bottom:15px;" x-show="(obj.streamMode || 'grid') === 'grid'">
+                                         <label>Spawn Source Grid (Randomized Origins)</label>
+                                         <div style="display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px); gap: 8px; background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; width: fit-content; border: 1px solid #444;">
+                                             <template x-for="pos in ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br']">
+                                                 <input type="checkbox" :checked="obj.spawnPoints && obj.spawnPoints.includes(pos)"
+                                                        @change="
+                                                            if ($el.checked) {
+                                                                if (!obj.spawnPoints) obj.spawnPoints = [];
+                                                                if (!obj.spawnPoints.includes(pos)) obj.spawnPoints.push(pos);
+                                                            } else {
+                                                                obj.spawnPoints = obj.spawnPoints.filter(p => p !== pos);
+                                                            }
+                                                            saveConfigRaw();
+                                                        " :title="pos" style="width:20px; height:20px; cursor:pointer;">
+                                             </template>
+                                         </div>
+                                     </div>
+
+                                     <div class="setting-group" style="margin-bottom:10px;" x-show="obj.streamMode === 'top'">
+                                         <label>Stream Position (spawn point)</label>
+                                         <div class="pill-group" style="display:flex; flex-wrap:wrap; gap:5px;">
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['tc']) }" @click="obj.spawnPoints = ['tc']; saveConfigRaw()">Above (center)</div>
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['ml']) }" @click="obj.spawnPoints = ['ml']; saveConfigRaw()">Lean Left</div>
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['mr']) }" @click="obj.spawnPoints = ['mr']; saveConfigRaw()">Lean Right</div>
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['ml','mr']) }" @click="obj.spawnPoints = ['ml','mr']; saveConfigRaw()">Random Side</div>
+                                         </div>
+                                     </div>
+                                </div>
+                            </template>
+
+                            <!-- If type is webgl-fire -->
+                            <template x-if="obj.type === 'webgl-fire'">
+                                <div style="padding-top:10px;">
+                                    <p style="font-size:11px; color:#aaa; margin:0 0 10px 0;">WebGL Cartoon Fire: high-performance stylized fire stream with rising hot embers and dynamic flame shaders.</p>
+
+                                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px; background:rgba(0,0,0,0.25); padding:12px; border-radius:6px; border:1px solid rgba(255,255,255,0.08);">
+                                         <label style="font-size:11px; color:#ff5500; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase;">Flame Base Color (RGBA Sliders)</label>
+                                         
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#ff4444; width:15px; font-weight:bold;">R</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorR" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorR !== undefined ? obj.colorR : 255"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#00ff88; width:15px; font-weight:bold;">G</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorG" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorG !== undefined ? obj.colorG : 80"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#00aaff; width:15px; font-weight:bold;">B</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorB" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorB !== undefined ? obj.colorB : 0"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#ffffff; width:15px; font-weight:bold;">A</span>
+                                             <input type="range" min="0.0" max="1.0" step="0.05" x-model.number="obj.colorA" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="parseFloat(obj.colorA !== undefined ? obj.colorA : 0.95).toFixed(2)"></span>
+                                         </div>
+
+                                         <div class="water-color-preview-box">
+                                             <div style="width:100%; height:100%; position:absolute; left:0; top:0;" 
+                                                  :style="{ backgroundColor: 'rgba(' + (obj.colorR !== undefined ? obj.colorR : 255) + ',' + (obj.colorG !== undefined ? obj.colorG : 80) + ',' + (obj.colorB !== undefined ? obj.colorB : 0) + ',' + (obj.colorA !== undefined ? obj.colorA : 0.95) + ')' }">
+                                             </div>
+                                         </div>
+                                    </div>
+
+
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Target Destination</label>
+                                            <select x-model="obj.target" style="width:100%; padding:10px; background:rgba(0,0,0,0.5); color:#fff; border:1px solid #555; border-radius:4px;" @change="saveConfigRaw()">
+                                                <option value="avatar">Avatar (Default)</option>
+                                                <template x-for="t in config.targets" :key="t.id">
+                                                    <option :value="t.name || t.id" x-text="t.name"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Outline Width — <span x-text="Math.round(parseFloat(obj.borderThickness || 0.08) * 100)"></span></label>
+                                            <input type="range" min="0.01" max="0.20" step="0.01" x-model.number="obj.borderThickness" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Flame Radius — <span x-text="obj.fluidRadius || 16"></span>px</label>
+                                            <input type="range" min="5" max="600" step="1" x-model.number="obj.fluidRadius" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Flame Density (Particles) — <span x-text="obj.fluidCount || 180"></span></label>
+                                            <input type="range" min="30" max="1500" step="10" x-model.number="obj.fluidCount" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Duration — <span x-text="parseFloat((obj.fluidDuration !== undefined ? obj.fluidDuration : 4000) / 1000).toFixed(1)"></span>s</label>
+                                            <input type="range" min="1000" max="60000" step="500" x-model.number="obj.fluidDuration" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Flame Velocity — <span x-text="parseFloat(obj.fluidViscosity || 0.6).toFixed(2)"></span></label>
+                                            <input type="range" min="0.1" max="1.5" step="0.05" x-model.number="obj.fluidViscosity" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Rising Gravity (Negative = Rise) — <span x-text="parseFloat(obj.fluidGravity !== undefined ? obj.fluidGravity : -0.4).toFixed(1)"></span></label>
+                                            <input type="range" min="-2.0" max="1.0" step="0.1" x-model.number="obj.fluidGravity" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                         <div style="flex:1;">
+                                             <label style="font-size:11px; color:#ccc;">Flame Spawn Width (px) — <span x-text="obj.fluidWidth || 35"></span>px</label>
+                                             <input type="range" min="10" max="300" step="5" x-model.number="obj.fluidWidth" @input="saveConfigRaw()" style="width:100%;">
+                                         </div>
+                                         <div style="flex:1;">
+                                             <label style="font-size:11px; color:#ccc;">Flame Dissipation Rate — <span x-text="obj.dripShrink !== undefined ? obj.dripShrink : 25"></span></label>
+                                             <input type="range" min="0" max="100" step="1" x-model.number="obj.dripShrink" @input="saveConfigRaw()" style="width:100%;">
+                                         </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                          <div style="flex:1; display:flex; align-items:center; padding-top:15px;">
+                                              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:#fff; font-size:11px;">
+                                                  <input type="checkbox" x-model="obj.enableOutline" @change="saveConfigRaw()" style="width:16px; height:16px;"> Enable Flame Outline
+                                              </label>
+                                          </div>
+                                    </div>
+
+                                    <div class="setting-group" style="margin-bottom:10px;">
+                                        <label>Flame Flow Mode</label>
+                                        <div class="pill-group" style="display:flex; flex-wrap:wrap; gap:5px;">
+                                            <div class="pill-btn" :class="{ 'active': (obj.streamMode || 'grid') === 'grid' }" @click="obj.streamMode = 'grid'; saveConfigRaw()">Aim from Grid</div>
+                                            <div class="pill-btn" :class="{ 'active': obj.streamMode === 'top' }" @click="obj.streamMode = 'top'; saveConfigRaw()">Rise Straight Up</div>
+                                        </div>
+                                    </div>
+
+                                    <div class="setting-group" style="margin-bottom:15px;" x-show="(obj.streamMode || 'grid') === 'grid'">
+                                         <label>Spawn Source Grid (Randomized Origins)</label>
+                                         <div style="display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px); gap: 8px; background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; width: fit-content; border: 1px solid #444;">
+                                             <template x-for="pos in ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br']">
+                                                 <input type="checkbox" :checked="obj.spawnPoints && obj.spawnPoints.includes(pos)"
+                                                        @change="
+                                                            if ($el.checked) {
+                                                                if (!obj.spawnPoints) obj.spawnPoints = [];
+                                                                if (!obj.spawnPoints.includes(pos)) obj.spawnPoints.push(pos);
+                                                            } else {
+                                                                obj.spawnPoints = obj.spawnPoints.filter(p => p !== pos);
+                                                            }
+                                                            saveConfigRaw();
+                                                        " :title="pos" style="width:20px; height:20px; cursor:pointer;">
+                                             </template>
+                                         </div>
+                                     </div>
+
+                                     <div class="setting-group" style="margin-bottom:10px;" x-show="obj.streamMode === 'top'">
+                                         <label>Spawn Position (spawn point)</label>
+                                         <div class="pill-group" style="display:flex; flex-wrap:wrap; gap:5px;">
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['tc']) }" @click="obj.spawnPoints = ['tc']; saveConfigRaw()">Center</div>
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['ml']) }" @click="obj.spawnPoints = ['ml']; saveConfigRaw()">Lean Left</div>
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['mr']) }" @click="obj.spawnPoints = ['mr']; saveConfigRaw()">Lean Right</div>
+                                             <div class="pill-btn" :class="{ 'active': JSON.stringify(obj.spawnPoints) === JSON.stringify(['ml','mr']) }" @click="obj.spawnPoints = ['ml','mr']; saveConfigRaw()">Random Side</div>
+                                         </div>
+                                     </div>
+                                </div>
+                            </template>
+
+                            <!-- If type is webgl-lightning -->
+                            <template x-if="obj.type === 'webgl-lightning'">
+                                <div style="padding-top:10px;">
+                                    <p style="font-size:11px; color:#aaa; margin:0 0 10px 0;">WebGL Procedural Lightning: draws volumetric electric bolts with midpoint displacement branching and glowing additive shaders.</p>
+
+                                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px; background:rgba(0,0,0,0.25); padding:12px; border-radius:6px; border:1px solid rgba(255,255,255,0.08);">
+                                         <label style="font-size:11px; color:#aaccff; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase;">Lightning Color (RGBA Sliders)</label>
+                                         
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#ff4444; width:15px; font-weight:bold;">R</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorR" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorR !== undefined ? obj.colorR : 180"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#00ff88; width:15px; font-weight:bold;">G</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorG" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorG !== undefined ? obj.colorG : 220"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#00aaff; width:15px; font-weight:bold;">B</span>
+                                             <input type="range" min="0" max="255" step="1" x-model.number="obj.colorB" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.colorB !== undefined ? obj.colorB : 255"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px;">
+                                             <span style="font-size:11px; color:#ffffff; width:15px; font-weight:bold;">A</span>
+                                             <input type="range" min="0.0" max="1.0" step="0.05" x-model.number="obj.colorA" @input="saveConfigRaw()" style="flex:1;">
+                                             <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="parseFloat(obj.colorA !== undefined ? obj.colorA : 1.0).toFixed(2)"></span>
+                                         </div>
+
+                                         <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
+                                             <span style="font-size:11px; color:#ccc;">Quick Color Picker:</span>
+                                             <input type="color" 
+                                                    :value="rgbToHex(obj.colorR !== undefined ? obj.colorR : 180, obj.colorG !== undefined ? obj.colorG : 220, obj.colorB !== undefined ? obj.colorB : 255)"
+                                                    @input="
+                                                        const rgb = hexToRgb($el.value);
+                                                        obj.colorR = rgb.r;
+                                                        obj.colorG = rgb.g;
+                                                        obj.colorB = rgb.b;
+                                                        saveConfigRaw();
+                                                    " style="height: 30px; width: 60px; border: 1px solid #555; background: none; cursor: pointer; border-radius: 4px; padding: 0;">
+                                         </div>
+
+                                         <div class="water-color-preview-box">
+                                             <div style="width:100%; height:100%; position:absolute; left:0; top:0;" 
+                                                  :style="{ backgroundColor: 'rgba(' + (obj.colorR !== undefined ? obj.colorR : 180) + ',' + (obj.colorG !== undefined ? obj.colorG : 220) + ',' + (obj.colorB !== undefined ? obj.colorB : 255) + ',' + (obj.colorA !== undefined ? obj.colorA : 1.0) + ')' }">
+                                             </div>
+                                         </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Target Destination</label>
+                                            <select x-model="obj.target" style="width:100%; padding:10px; background:rgba(0,0,0,0.5); color:#fff; border:1px solid #555; border-radius:4px;" @change="saveConfigRaw()">
+                                                <option value="avatar">Avatar (Default)</option>
+                                                <template x-for="t in config.targets" :key="t.id">
+                                                    <option :value="t.name || t.id" x-text="t.name"></option>
+                                                </template>
+                                            </select>
+                                        </div>
+                                    </div>
+
+
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Branching Complexity (0-5) — <span x-text="obj.branching !== undefined ? obj.branching : 3"></span></label>
+                                            <input type="range" min="0" max="5" step="1" x-model.number="obj.branching" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Bolt Thickness — <span x-text="parseFloat(obj.boltWidth || 4.0).toFixed(1)"></span>px</label>
+                                            <input type="range" min="1.0" max="15.0" step="0.5" x-model.number="obj.boltWidth" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                          <div style="flex:1;">
+                                              <label style="font-size:11px; color:#ccc;">Duration (ms) — <span x-text="obj.duration || 500"></span>ms</label>
+                                              <input type="range" min="100" max="3000" step="50" x-model.number="obj.duration" @input="saveConfigRaw()" style="width:100%;">
+                                          </div>
+                                          <div style="flex:1;">
+                                              <label style="font-size:11px; color:#ccc;">Segment Count (Bones) — <span x-text="obj.maxIterations !== undefined ? obj.maxIterations : 12"></span></label>
+                                              <input type="range" min="3" max="30" step="1" x-model.number="obj.maxIterations" @input="saveConfigRaw()" style="width:100%;">
+                                          </div>
+                                      </div>
+
+                                     <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                         <div style="flex:1;">
+                                             <label style="font-size:11px; color:#ccc;">Wiggle Speed — <span x-text="parseFloat(obj.speed !== undefined ? obj.speed : 1.0).toFixed(1)"></span>x</label>
+                                             <input type="range" min="0.1" max="10.0" step="0.1" x-model.number="obj.speed" @input="saveConfigRaw()" style="width:100%;">
+                                         </div>
+                                         <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:6px; padding-top:12px;">
+                                             <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:#fff; font-size:11px;">
+                                                <input type="checkbox" x-model="obj.enableBloom" @change="saveConfigRaw()" style="width:16px; height:16px;"> Enable Bloom Glow
+                                             </label>
+                                             <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:#fff; font-size:11px;">
+                                                <input type="checkbox" x-model="obj.stopAtMask" @change="saveConfigRaw()" style="width:16px; height:16px;"> Stop at Mask
+                                             </label>
+                                         </div>
+                                     </div>
+
+                                     <div x-show="obj.enableBloom" style="display:flex; flex-direction:column; gap:10px; margin-bottom:15px; background:rgba(0,0,0,0.25); padding:12px; border-radius:6px; border:1px solid rgba(255,255,255,0.08);">
+                                          <label style="font-size:11px; color:#ffb3ff; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase;">Bloom Glow Settings</label>
+                                          
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#ff4444; width:15px; font-weight:bold;">R</span>
+                                              <input type="range" min="0" max="255" step="1" x-model.number="obj.bloomColorR" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.bloomColorR !== undefined ? obj.bloomColorR : (obj.colorR || 180)"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#00ff88; width:15px; font-weight:bold;">G</span>
+                                              <input type="range" min="0" max="255" step="1" x-model.number="obj.bloomColorG" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.bloomColorG !== undefined ? obj.bloomColorG : (obj.colorG || 220)"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#00aaff; width:15px; font-weight:bold;">B</span>
+                                              <input type="range" min="0" max="255" step="1" x-model.number="obj.bloomColorB" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="obj.bloomColorB !== undefined ? obj.bloomColorB : (obj.colorB || 255)"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#ffffff; width:15px; font-weight:bold;">A</span>
+                                              <input type="range" min="0.0" max="1.0" step="0.05" x-model.number="obj.bloomColorA" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="parseFloat(obj.bloomColorA !== undefined ? obj.bloomColorA : (obj.colorA || 1.0)).toFixed(2)"></span>
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px; margin-top:5px; margin-bottom:10px;">
+                                              <span style="font-size:11px; color:#ccc;">Quick Bloom Color Picker:</span>
+                                              <input type="color" 
+                                                     :value="rgbToHex(obj.bloomColorR !== undefined ? obj.bloomColorR : (obj.colorR || 180), obj.bloomColorG !== undefined ? obj.bloomColorG : (obj.colorG || 220), obj.bloomColorB !== undefined ? obj.bloomColorB : (obj.colorB || 255))"
+                                                     @input="
+                                                         const rgb = hexToRgb($el.value);
+                                                         obj.bloomColorR = rgb.r;
+                                                         obj.bloomColorG = rgb.g;
+                                                         obj.bloomColorB = rgb.b;
+                                                         saveConfigRaw();
+                                                     " style="height: 30px; width: 60px; border: 1px solid #555; background: none; cursor: pointer; border-radius: 4px; padding: 0;">
+                                          </div>
+
+                                          <div style="display:flex; align-items:center; gap:10px;">
+                                              <span style="font-size:11px; color:#ccc; width:70px;">Bloom Size:</span>
+                                              <input type="range" min="0.5" max="5.0" step="0.1" x-model.number="obj.bloomSize" @input="saveConfigRaw()" style="flex:1;">
+                                              <span style="font-size:11px; color:#aaa; width:30px; text-align:right;" x-text="parseFloat(obj.bloomSize !== undefined ? obj.bloomSize : 1.0).toFixed(1)"></span>
+                                          </div>
+
+                                          <div class="water-color-preview-box" style="margin-top:10px;">
+                                              <div style="width:100%; height:100%; position:absolute; left:0; top:0;" 
+                                                   :style="{ backgroundColor: 'rgba(' + (obj.bloomColorR !== undefined ? obj.bloomColorR : (obj.colorR || 180)) + ',' + (obj.bloomColorG !== undefined ? obj.bloomColorG : (obj.colorG || 220)) + ',' + (obj.bloomColorB !== undefined ? obj.bloomColorB : (obj.colorB || 255)) + ',' + (obj.bloomColorA !== undefined ? obj.bloomColorA : (obj.colorA || 1.0)) + ')' }">
+                                              </div>
+                                          </div>
+                                     </div>
+
+                                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Roughness — <span x-text="parseFloat(obj.roughness !== undefined ? obj.roughness : 0.85).toFixed(2)"></span></label>
+                                            <input type="range" min="0.1" max="1.5" step="0.05" x-model.number="obj.roughness" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:#ccc;">Straightness — <span x-text="parseFloat(obj.straightness !== undefined ? obj.straightness : 0.6).toFixed(2)"></span></label>
+                                            <input type="range" min="0.0" max="1.0" step="0.05" x-model.number="obj.straightness" @input="saveConfigRaw()" style="width:100%;">
+                                        </div>
+                                    </div>
+
+                                    <div class="setting-group" style="margin-bottom:15px;">
+                                         <label>Spawn Source Grid (Origins)</label>
+                                         <div style="display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(3, 30px); gap: 8px; background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; width: fit-content; border: 1px solid #444;">
+                                             <template x-for="pos in ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br']">
+                                                 <input type="checkbox" :checked="obj.spawnPoints && obj.spawnPoints.includes(pos)"
+                                                        @change="
+                                                            if ($el.checked) {
+                                                                if (!obj.spawnPoints) obj.spawnPoints = [];
+                                                                if (!obj.spawnPoints.includes(pos)) obj.spawnPoints.push(pos);
+                                                            } else {
+                                                                obj.spawnPoints = obj.spawnPoints.filter(p => p !== pos);
+                                                            }
+                                                            saveConfigRaw();
+                                                        " :title="pos" style="width:20px; height:20px; cursor:pointer;">
+                                             </template>
+                                         </div>
+                                     </div>
+                                </div>
+                            </template>
+                            
+                            <div class="setting-group" style="flex-direction:row; justify-content:space-between; align-items:center;">
+                                <button class="action-btn test-obj-btn" style="background:#444; width:150px;" @click="testObject(obj)">Test</button>
+                                <div style="display:flex; align-items:center;">
+                                    <span class="save-status" style="color:#ff4444; margin-right:10px;"></span>
+                                </div>
+                            </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <div class="tab-content" :class="{ 'active': activeTab === 'source' }" x-show="activeTab === 'source'" id="tab-source">
+                <h3>Source Settings</h3>
+                
+                <div class="setting-group">
+                    <label>Avatar Scene</label>
+                    <select id="avatar_target_scene" class="obs-input"
+                            x-init="
+                                window.ObsDropbox.populate($el, 'scene', null, config.camera_tracking.avatar_source);
+                                $watch('config.camera_tracking.avatar_source', val => {
+                                    $el.dataset.obsOverride = val;
+                                    $el.value = val;
+                                });
+                            "
+                            :value="config.camera_tracking.avatar_source"
+                            @change="if ($el.dataset.populating !== 'true') { config.camera_tracking.avatar_source = $el.value; saveConfigRaw(); }">
+                        <option value="">Select an avatar scene...</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label>Alignment Scene</label>
+                    <select id="active_obs_scene" class="obs-input"
+                            x-init="
+                                window.ObsDropbox.populate($el, 'scene', null, config.camera_tracking.active_scene);
+                                $watch('config.camera_tracking.active_scene', val => {
+                                    $el.dataset.obsOverride = val;
+                                    $el.value = val;
+                                });
+                            "
+                            :value="config.camera_tracking.active_scene"
+                            @change="if ($el.dataset.populating !== 'true') { config.camera_tracking.active_scene = $el.value; saveConfigRaw(); }">
+                        <option value="">Select an alignment scene...</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label>Masking Mode</label>
+                    <select id="vision_mode" class="obs-input"
+                            x-model="config.camera_tracking.mode"
+                            @change="saveConfigRaw()">
+                        <option value="chroma">Chroma Key</option>
+                        <option value="brightness">Brightness</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label>Masking Threshold (<span x-text="config.camera_tracking.threshold !== undefined ? config.camera_tracking.threshold : 40"></span>)</label>
+                    <input type="range" min="0" max="255" step="1" x-model.number="config.camera_tracking.threshold" @input="saveConfigRaw()" style="width: 100%;">
+                    <div style="font-size: 11px; color: #888; margin-top: 5px;">Adjusts the sensitivity of the chroma key or brightness cutout.</div>
+                </div>
+
+                <div id="chroma_settings" x-show="config.camera_tracking.mode === 'chroma'" class="setting-group">
+                    <label>Chroma Key Color</label>
+                    <input type="color" id="vision_chroma_color" class="obs-input" style="height: 40px;"
+                           x-model="config.camera_tracking.chroma_color"
+                           @input="
+                               const rgb = hexToRgb(config.camera_tracking.chroma_color);
+                               config.camera_tracking.chroma_r = rgb.r;
+                               config.camera_tracking.chroma_g = rgb.g;
+                               config.camera_tracking.chroma_b = rgb.b;
+                           "
+                           @change="saveConfigRaw()">
+                    <div style="font-size: 12px; margin-top: 5px;">
+                        R:<span x-text="config.camera_tracking.chroma_r || 0"></span> 
+                        G:<span x-text="config.camera_tracking.chroma_g || 0"></span> 
+                        B:<span x-text="config.camera_tracking.chroma_b || 0"></span>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; border-top: 1px solid #333; padding-top: 20px;">
+                    <div class="button-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h4 style="margin: 0; color: #00ffcc;">Sources to Track</h4>
+                        <button class="action-btn" @click="addTarget()">+ Add Target</button>
+                    </div>
+                    
+                    <div id="target-inventory">
+                        <template x-for="(target, index) in config.targets" :key="target.id">
+                            <div class="object-sub-window type-target" :data-id="target.id" style="border-left: 4px solid #ff3366;">
+                                <div class="window-header">
+                                    <h4>OBS Source Target</h4>
+                                    <button class="trash-btn" style="padding: 5px 10px; font-size: 12px; border-radius: 4px; background: #ff4444; color: #fff; border: none; cursor: pointer;" @click="deleteTarget(target.id)">Delete</button>
+                                </div>
+                                
+                                <p style="font-size: 11px; color: #aaa; margin: 0 0 10px 0;">Select an OBS source to track and assign it an identifier name.</p>
+                                
+                                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                    <div style="flex: 1;">
+                                        <label style="font-size: 11px; color: #ccc;">Identifier Name</label>
+                                        <input type="text" x-model="target.name" placeholder="e.g. My Head Hitbox" style="width: 100%; box-sizing: border-box;" @change="saveConfigRaw()">
+                                    </div>
+                                    <div style="flex: 1;">
+                                        <label style="font-size: 11px; color: #ccc;">Target OBS Source Name</label>
+                                        <select class="target-obs-source obs-input" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid #555; border-radius: 4px; box-sizing: border-box;"
+                                                x-init="
+                                                    $watch('config.camera_tracking.active_scene', (newScene) => {
+                                                        window.ObsDropbox.populate($el, 'source', newScene, target.obsSource);
+                                                    });
+                                                    window.ObsDropbox.populate($el, 'source', config.camera_tracking.active_scene, target.obsSource);
+                                                    $watch('target.obsSource', val => { 
+                                                        $el.dataset.obsOverride = val;
+                                                        $el.value = val; 
+                                                    });
+                                                 "
+                                                :value="target.obsSource"
+                                                @change="if ($el.dataset.populating !== 'true') { target.obsSource = $el.value; saveConfigRaw(); }">
+                                            <option value="">Select a source...</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" :class="{ 'active': activeTab === 'trigger' }" x-show="activeTab === 'trigger'" id="tab-trigger">
+                <h3>Trigger and Action Settings</h3>
+                <div class="button-row">
+                    <button class="action-btn" @click="addTrigger()">+ Add Trigger</button>
+                </div>
+                <div class="ws-log-container">
+                    <h4>WebSocket Event Log</h4>
+                    <div id="ws-log-window"></div>
+                </div>
+                
+                <div id="trigger-inventory">
+                    <template x-for="(trig, tIndex) in config.triggers" :key="trig.id">
+                        <div class="object-sub-window" :data-id="trig.id" style="border-left: 4px solid #ff9933;" x-data="{ collapsed: true }">
+                            <div class="window-header" style="cursor: pointer; user-select: none;" @click="collapsed = !collapsed">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="font-size: 11px; transition: transform 0.2s; display: inline-block; color: #aaa;" :style="collapsed ? '' : 'transform: rotate(90deg);'">▶</span>
+                                    <h4 style="margin: 0; color: #fff;" x-text="'Pattern: ' + (trig.events || 'New Trigger') + ' ➔ ' + (config.objects.find(o => o.id === trig.objectId)?.name || 'None')"></h4>
+                                </div>
+                                <button class="trash-btn" style="padding: 5px 10px; font-size: 12px; border-radius: 4px; background: #ff4444; color: #fff; border: none; cursor: pointer;" @click.stop="deleteTrigger(trig.id)">Delete</button>
+                            </div>
+                            <div x-show="!collapsed" style="margin-top: 15px;">
+                            
+                            <p style="font-size: 11px; color: #aaa; margin: 0 0 10px 0;">Use * as a wildcard (e.g. <code>Twitch * sub</code>). Separate multiple with commas. Use {1}, {username}, etc. in Target / Amount.</p>
+                            
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                <div style="flex: 2;">
+                                    <label style="font-size: 11px; color: #ccc;">Trigger Pattern(s) (comma-separated)</label>
+                                    <input type="text" x-model="trig.events" placeholder="Twitch * sub, YouTube * member" style="width: 100%; box-sizing: border-box;" @change="saveConfigRaw()">
+                                </div>
+                                <div style="flex: 1;">
+                                    <label style="font-size: 11px; color: #ccc;">Object to Spawn</label>
+                                    <select :value="trig.objectId" class="obs-input" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid #555; border-radius: 4px; box-sizing: border-box;"
+                                            x-init="
+                                                $nextTick(() => { $el.value = trig.objectId; });
+                                                $watch('trig.objectId', val => { $el.value = val; });
+                                                $watch('config.objects', () => { $nextTick(() => { $el.value = trig.objectId; }); });
+                                            "
+                                            @change="trig.objectId = $event.target.value; saveConfigRaw()">
+                                        <option value="">Select an Object...</option>
+                                        <option value="none">None (OBS Actions Only)</option>
+                                        <template x-for="obj in config.objects.filter(o => o.type !== 'audio')" :key="obj.id">
+                                            <option :value="obj.id" x-text="obj.name || 'Unnamed ' + obj.type"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 4px; border: 1px solid #333;">
+                                <div style="flex: 1;">
+                                    <label style="font-size: 11px; color: #aaa;">Target Location</label>
+                                    <select :value="trig.target" class="obs-input" style="width: 100%; padding: 10px; background: rgba(0,0,0,0.5); color: #fff; border: 1px solid #555; border-radius: 4px; box-sizing: border-box;"
+                                            x-init="
+                                                $nextTick(() => { $el.value = trig.target || 'avatar'; });
+                                                $watch('trig.target', val => { $el.value = val; });
+                                                $watch('config.targets', () => { $nextTick(() => { $el.value = trig.target || 'avatar'; }); });
+                                            "
+                                            @change="trig.target = $event.target.value; saveConfigRaw()">
+                                        <option value="avatar">Avatar</option>
+                                        <template x-for="t in config.targets" :key="t.id">
+                                            <option :value="t.id" x-text="t.name"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                                <div style="flex: 1;">
+                                    <label style="font-size: 11px; color: #aaa;">Amount Override</label>
+                                    <input type="text" x-model="trig.amount" placeholder="1 or {customData.tier}" style="width: 100%; box-sizing: border-box;" @change="saveConfigRaw()">
+                                </div>
+                                <div style="flex: 1;">
+                                    <label style="font-size: 11px; color: #aaa;">Speed Override (1-10)</label>
+                                    <input type="number" x-model="trig.speed" placeholder="Leave blank for obj default" style="width: 100%; box-sizing: border-box;" @change="saveConfigRaw()">
+                                </div>
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                <div style="flex: 1;">
+                                    <label style="font-size: 11px; color: #aaa;">Initial Delay (ms)</label>
+                                    <input type="number" x-model.number="trig.delay" style="width: 100%; box-sizing: border-box;" @change="saveConfigRaw()">
+                                </div>
+                                <div style="flex: 1;">
+                                    <label style="font-size: 11px; color: #aaa;">Repeat Delay (ms gap)</label>
+                                    <input type="number" x-model.number="trig.repeatDelay" style="width: 100%; box-sizing: border-box;" @change="saveConfigRaw()">
+                                </div>
+                            </div>
+                            
+                            <!-- OBS Actions: On Start -->
+                            <div style="margin-bottom: 10px; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid #444; border-radius: 4px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <label style="font-size: 11px; color: #ccc;">OBS Actions: On Start</label>
+                                    <button class="add-obs-action-btn" style="background: rgba(0, 255, 204, 0.2); color: #00ffcc; border: 1px solid #00ffcc; border-radius: 4px; font-size: 10px; padding: 2px 8px; cursor: pointer;" @click="addObsAction(trig, 'obsActions')">+ Add Action</button>
+                                </div>
+                                <div class="obs-actions-list" style="display: flex; flex-direction: column; gap: 5px;">
+                                    <template x-for="(action, aIndex) in trig.obsActions" :key="aIndex">
+                                        <div class="obs-action-row" style="display: flex; flex-direction: column; gap: 5px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; margin-bottom: 5px; border: 1px solid #444;">
+                                            <div style="display: flex; gap: 5px; align-items: flex-end;">
+                                                <div style="flex: 1.5;">
+                                                    <label style="font-size: 10px; color: #aaa;">Action Type</label>
+                                                    <select x-model="action.type" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;" @change="saveConfigRaw()">
+                                                        <option value="toggle_source">Toggle Source (X ms)</option>
+                                                        <option value="toggle_filter">Toggle Filter (X ms)</option>
+                                                        <option value="set_value">Set Source/Filter Value</option>
+                                                        <option value="set_crop">Set Source Crop</option>
+                                                        <option value="play_audio">Play Audio (App Library)</option>
+                                                        <option value="throw_object">Throw Object (App Inventory)</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type !== 'play_audio' && action.type !== 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Scene (Optional)</label>
+                                                    <select class="action-scene obs-input"
+                                                            x-init="
+                                                                window.ObsDropbox.populate($el, 'scene', null, action.scene);
+                                                                $watch('action.scene', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.scene"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.scene = $el.value;
+                                                                    action.source = '';
+                                                                    action.filter = '';
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type !== 'play_audio' && action.type !== 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Source</label>
+                                                    <select class="action-source obs-input"
+                                                            x-init="
+                                                                $watch('action.scene', (newScene) => {
+                                                                    window.ObsDropbox.populate($el, 'source', newScene, action.source);
+                                                                });
+                                                                window.ObsDropbox.populate($el, 'source', action.scene, action.source);
+                                                                $watch('action.source', val => { 
+                                                                    $el.dataset.obsOverride = val;
+                                                                    $el.value = val; 
+                                                                });
+                                                            "
+                                                            :value="action.source"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.source = $el.value;
+                                                                    action.filter = '';
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'play_audio'">
+                                                    <label style="font-size: 10px; color: #ff00ff;">Audio Element</label>
+                                                    <select :value="action.source" class="action-audio-object obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'play_audio') $el.value = action.source; });
+                                                                $watch('action.source', val => { if (action.type === 'play_audio') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'play_audio') $el.value = action.source; }); });
+                                                            "
+                                                            @change="action.source = $event.target.value; saveConfigRaw()">
+                                                        <option value="">Select Audio...</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'audio'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Audio'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #00ffcc;">Object to Throw</label>
+                                                    <select :value="action.objectId" class="action-throw-object obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.objectId; });
+                                                                $watch('action.objectId', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.objectId; }); });
+                                                            "
+                                                            @change="action.objectId = $event.target.value; saveConfigRaw()">
+                                                        <option value="">Select Object...</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'image' || o.type === 'snapshot' || o.type === 'liquid' || o.type === 'webgl-water' || o.type === 'webgl-fire' || o.type === 'webgl-lightning' || o.type === '3d-model'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Object'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <button class="remove-action-btn" title="Remove action" style="background: #ff4444; color: #fff; border: none; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; height: 28px;" @click="deleteObsAction(trig, 'obsActions', aIndex)">X</button>
+                                            </div>
+                                            
+                                            <div style="display: flex; gap: 5px; align-items: flex-end;">
+                                                <div style="flex: 1;" x-show="action.type === 'toggle_filter' || action.type === 'set_value'">
+                                                    <label style="font-size: 10px; color: #aaa;">Filter</label>
+                                                    <select class="action-filter obs-input"
+                                                            x-init="
+                                                                $watch('action.source', (newSource) => {
+                                                                    window.ObsDropbox.populate($el, 'filter', newSource, action.filter);
+                                                                });
+                                                                window.ObsDropbox.populate($el, 'filter', action.source, action.filter);
+                                                                $watch('action.filter', val => { 
+                                                                    $el.dataset.obsOverride = val;
+                                                                    $el.value = val; 
+                                                                });
+                                                            "
+                                                            :value="action.filter"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.filter = $el.value;
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'set_value'">
+                                                    <label style="font-size: 10px; color: #aaa;">Property / Setting</label>
+                                                    <select class="action-setting-key obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                const updateProps = async () => {
+                                                                    $el.dataset.populating = 'true';
+                                                                    if (action.source && action.filter) {
+                                                                        const props = await fetchFilterProperties(action.source, action.filter);
+                                                                        let opts = '<option value=\'\'>Select Property...</option>';
+                                                                        props.forEach(k => {
+                                                                            opts += `<option value=\'${k}\'>${k}</option>`;
+                                                                        });
+                                                                        $el.innerHTML = opts;
+                                                                        $el.value = action.settingKey || '';
+                                                                    } else {
+                                                                        $el.innerHTML = '<option value=\'\'>Select Filter First...</option>';
+                                                                    }
+                                                                    $el.dataset.populating = 'false';
+                                                                };
+                                                                $watch('action.filter', updateProps);
+                                                                $watch('action.source', updateProps);
+                                                                $watch('action.settingKey', val => { $el.value = val; });
+                                                                updateProps();
+                                                            "
+                                                            :value="action.settingKey"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.settingKey = $el.value;
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1.5;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Target</label>
+
+                                                                                                            <select :value="action.target" class="action-throw-target obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.target || 'avatar'; });
+                                                                $watch('action.target', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.targets', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.target || 'avatar'; }); });
+                                                            "
+                                                            @change="action.target = $event.target.value; saveConfigRaw()">
+                                                        <option value="avatar">Avatar</option>
+                                                        <template x-for="t in config.targets" :key="t.id">
+                                                            <option :value="t.id" x-text="t.name"></option>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Amount</label>
+                                                    <input type="text" x-model="action.amount" placeholder="1" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Speed (1-10)</label>
+                                                    <input type="number" x-model="action.speed" placeholder="Default" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Repeat (ms)</label>
+                                                    <input type="number" x-model="action.repeatDelay" placeholder="200" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #ff00ff;">Collision Sound</label>
+
+                                                                                                            <select :value="action.collisionSound" class="action-throw-sound obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.collisionSound; });
+                                                                $watch('action.collisionSound', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.collisionSound; }); });
+                                                            "
+                                                            @change="action.collisionSound = $event.target.value; saveConfigRaw()">
+                                                        <option value="">None</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'audio'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Audio'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+
+                                                <div style="flex: 0.5;">
+                                                    <label style="font-size: 10px; color: #aaa;">Delay (ms)</label>
+                                                    <input type="number" x-model.number="action.delay" placeholder="ms" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 0.5;" x-show="action.type === 'toggle_source' || action.type === 'toggle_filter' || action.type === 'set_crop'">
+                                                    <label style="font-size: 10px; color: #aaa;">Duration (ms)</label>
+                                                    <input type="number" x-model.number="action.duration" placeholder="ms" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 0.5;" x-show="action.type === 'set_value' || action.type === 'set_crop'">
+                                                    <label style="font-size: 10px; color: #00ffcc;" x-text="action.type === 'set_crop' ? 'Target Hitbox' : 'Data Value'"></label>
+                                                    <select :value="action.value" class="action-target-hitbox obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;" x-show="action.type === 'set_crop'"
+                                                             x-init="
+                                                                 $nextTick(() => { if (action.type === 'set_crop') $el.value = action.value || 'avatar'; });
+                                                                 $watch('action.value', val => { if (action.type === 'set_crop') $el.value = val; });
+                                                                 $watch('config.targets', () => { $nextTick(() => { if (action.type === 'set_crop') $el.value = action.value || 'avatar'; }); });
+                                                             "
+                                                             @change="action.value = $event.target.value; saveConfigRaw()">
+                                                        <option value="avatar">Avatar</option>
+                                                        <option value="camera">Camera Main</option>
+                                                        <template x-for="t in config.targets" :key="t.id">
+                                                            <option :value="t.id" x-text="t.name"></option>
+                                                        </template>
+                                                    </select>
+                                                    <input type="text" x-model="action.value" placeholder="Value" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" x-show="action.type !== 'set_crop'" @change="saveConfigRaw()">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- OBS Actions: On Collision -->
+                            <div style="margin-bottom: 10px; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid #444; border-radius: 4px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <label style="font-size: 11px; color: #ccc;">OBS Actions: On Collision</label>
+                                    <button class="add-obs-action-btn" style="background: rgba(255, 153, 51, 0.2); color: #ff9933; border: 1px solid #ff9933; border-radius: 4px; font-size: 10px; padding: 2px 8px; cursor: pointer;" @click="addObsAction(trig, 'collisionActions')">+ Add Action</button>
+                                </div>
+                                <div class="obs-actions-list" style="display: flex; flex-direction: column; gap: 5px;">
+                                    <template x-for="(action, aIndex) in trig.collisionActions" :key="aIndex">
+                                        <div class="obs-action-row" style="display: flex; flex-direction: column; gap: 5px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; margin-bottom: 5px; border: 1px solid #444;">
+                                            <div style="display: flex; gap: 5px; align-items: flex-end;">
+                                                <div style="flex: 1.5;">
+                                                    <label style="font-size: 10px; color: #aaa;">Action Type</label>
+                                                    <select x-model="action.type" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;" @change="saveConfigRaw()">
+                                                        <option value="toggle_source">Toggle Source (X ms)</option>
+                                                        <option value="toggle_filter">Toggle Filter (X ms)</option>
+                                                        <option value="set_value">Set Source/Filter Value</option>
+                                                        <option value="set_crop">Set Source Crop</option>
+                                                        <option value="play_audio">Play Audio (App Library)</option>
+                                                        <option value="throw_object">Throw Object (App Inventory)</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type !== 'play_audio' && action.type !== 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Scene (Optional)</label>
+                                                    <select class="action-scene obs-input"
+                                                            x-init="
+                                                                window.ObsDropbox.populate($el, 'scene', null, action.scene);
+                                                                $watch('action.scene', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.scene"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.scene = $el.value;
+                                                                    action.source = '';
+                                                                    action.filter = '';
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type !== 'play_audio' && action.type !== 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Source</label>
+                                                    <select class="action-source obs-input"
+                                                            x-init="
+                                                                $watch('action.scene', (newScene) => {
+                                                                    window.ObsDropbox.populate($el, 'source', newScene, action.source);
+                                                                });
+                                                                window.ObsDropbox.populate($el, 'source', action.scene, action.source);
+                                                                $watch('action.source', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.source"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.source = $el.value;
+                                                                    action.filter = '';
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'play_audio'">
+                                                    <label style="font-size: 10px; color: #ff00ff;">Audio Element</label>
+                                                    <select :value="action.source" class="action-audio-object obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'play_audio') $el.value = action.source; });
+                                                                $watch('action.source', val => { if (action.type === 'play_audio') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'play_audio') $el.value = action.source; }); });
+                                                            "
+                                                            @change="action.source = $event.target.value; saveConfigRaw()">
+                                                        <option value="">Select Audio...</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'audio'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Audio'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+
+                                                                                                        <div style="flex: 2;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #00ffcc;">Object to Throw</label>
+                                                    <select :value="action.objectId" class="action-throw-object obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.objectId; });
+                                                                $watch('action.objectId', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.objectId; }); });
+                                                            "
+                                                            @change="action.objectId = $event.target.value; saveConfigRaw()">
+                                                        <option value="">Select Object...</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'image' || o.type === 'snapshot' || o.type === 'liquid' || o.type === 'webgl-water' || o.type === 'webgl-fire' || o.type === 'webgl-lightning'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Object'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <button class="remove-action-btn" title="Remove action" style="background: #ff4444; color: #fff; border: none; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; height: 28px;" @click="deleteObsAction(trig, 'collisionActions', aIndex)">X</button>
+                                            </div>
+                                            
+                                            <div style="display: flex; gap: 5px; align-items: flex-end;">
+                                                <div style="flex: 1;" x-show="action.type === 'toggle_filter' || action.type === 'set_value'">
+                                                    <label style="font-size: 10px; color: #aaa;">Filter</label>
+                                                    <select class="action-filter obs-input"
+                                                            x-init="
+                                                                $watch('action.source', (newSource) => {
+                                                                    window.ObsDropbox.populate($el, 'filter', newSource, action.filter);
+                                                                });
+                                                                window.ObsDropbox.populate($el, 'filter', action.source, action.filter);
+                                                                $watch('action.filter', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.filter"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.filter = $el.value;
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'set_value'">
+                                                    <label style="font-size: 10px; color: #aaa;">Property / Setting</label>
+                                                    <select class="action-setting-key obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                const updateProps = async () => {
+                                                                    $el.dataset.populating = 'true';
+                                                                    if (action.source && action.filter) {
+                                                                        const props = await fetchFilterProperties(action.source, action.filter);
+                                                                        let opts = '<option value=\'\'>Select Property...</option>';
+                                                                        props.forEach(k => {
+                                                                            opts += `<option value=\'${k}\'>${k}</option>`;
+                                                                        });
+                                                                        $el.innerHTML = opts;
+                                                                        $el.value = action.settingKey || '';
+                                                                    } else {
+                                                                        $el.innerHTML = '<option value=\'\'>Select Filter First...</option>';
+                                                                    }
+                                                                    $el.dataset.populating = 'false';
+                                                                };
+                                                                $watch('action.filter', updateProps);
+                                                                $watch('action.source', updateProps);
+                                                                $watch('action.settingKey', val => { $el.value = val; });
+                                                                updateProps();
+                                                            "
+                                                            :value="action.settingKey"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.settingKey = $el.value;
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1.5;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Target</label>
+                                                    
+                                                        <select :value="action.target" class="action-throw-target obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.target || 'avatar'; });
+                                                                $watch('action.target', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.targets', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.target || 'avatar'; }); });
+                                                            "
+                                                            @change="action.target = $event.target.value; saveConfigRaw()">
+                                                        <option value="avatar">Avatar</option>
+                                                        <template x-for="t in config.targets" :key="t.id">
+                                                            <option :value="t.id" x-text="t.name"></option>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Amount</label>
+                                                    <input type="text" x-model="action.amount" placeholder="1" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Speed (1-10)</label>
+                                                    <input type="number" x-model="action.speed" placeholder="Default" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Repeat (ms)</label>
+                                                    <input type="number" x-model="action.repeatDelay" placeholder="200" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #ff00ff;">Collision Sound</label>
+                                                    
+                                                        <select :value="action.collisionSound" class="action-throw-sound obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.collisionSound; });
+                                                                $watch('action.collisionSound', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.collisionSound; }); });
+                                                            "
+                                                            @change="action.collisionSound = $event.target.value; saveConfigRaw()">
+                                                         <option value="">None</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'audio'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Audio'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+
+                                                <div style="flex: 0.5;">
+                                                    <label style="font-size: 10px; color: #aaa;">Delay (ms)</label>
+                                                    <input type="number" x-model.number="action.delay" placeholder="ms" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 0.5;" x-show="action.type === 'toggle_source' || action.type === 'toggle_filter' || action.type === 'set_crop'">
+                                                    <label style="font-size: 10px; color: #aaa;">Duration (ms)</label>
+                                                    <input type="number" x-model.number="action.duration" placeholder="ms" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 0.5;" x-show="action.type === 'set_value' || action.type === 'set_crop'">
+                                                    <label style="font-size: 10px; color: #00ffcc;" x-text="action.type === 'set_crop' ? 'Target Hitbox' : 'Data Value'"></label>
+                                                    
+                                                        <select :value="action.value" class="action-target-hitbox obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;" x-show="action.type === 'set_crop'"
+                                                             x-init="
+                                                                 $nextTick(() => { if (action.type === 'set_crop') $el.value = action.value || 'avatar'; });
+                                                                 $watch('action.value', val => { if (action.type === 'set_crop') $el.value = val; });
+                                                                 $watch('config.targets', () => { $nextTick(() => { if (action.type === 'set_crop') $el.value = action.value || 'avatar'; }); });
+                                                             "
+                                                             @change="action.value = $event.target.value; saveConfigRaw()">
+                                                         <option value="avatar">Avatar</option>
+                                                        <option value="camera">Camera Main</option>
+                                                        <template x-for="t in config.targets" :key="t.id">
+                                                            <option :value="t.id" x-text="t.name"></option>
+                                                        </template>
+                                                    </select>
+                                                    <input type="text" x-model="action.value" placeholder="Value" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" x-show="action.type !== 'set_crop'" @change="saveConfigRaw()">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- OBS Actions: On Last Collision -->
+                            <div style="margin-bottom: 10px; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid #444; border-radius: 4px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <label style="font-size: 11px; color: #ccc;">OBS Actions: On Last Collision</label>
+                                    <button class="add-obs-action-btn" style="background: rgba(255, 51, 153, 0.2); color: #ff3399; border: 1px solid #ff3399; border-radius: 4px; font-size: 10px; padding: 2px 8px; cursor: pointer;" @click="addObsAction(trig, 'lastCollisionActions')">+ Add Action</button>
+                                </div>
+                                <div class="obs-actions-list" style="display: flex; flex-direction: column; gap: 5px;">
+                                    <template x-for="(action, aIndex) in trig.lastCollisionActions" :key="aIndex">
+                                        <div class="obs-action-row" style="display: flex; flex-direction: column; gap: 5px; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; margin-bottom: 5px; border: 1px solid #444;">
+                                            <div style="display: flex; gap: 5px; align-items: flex-end;">
+                                                <div style="flex: 1.5;">
+                                                    <label style="font-size: 10px; color: #aaa;">Action Type</label>
+                                                    <select x-model="action.type" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;" @change="saveConfigRaw()">
+                                                        <option value="toggle_source">Toggle Source (X ms)</option>
+                                                        <option value="toggle_filter">Toggle Filter (X ms)</option>
+                                                        <option value="set_value">Set Source/Filter Value</option>
+                                                        <option value="set_crop">Set Source Crop</option>
+                                                        <option value="play_audio">Play Audio (App Library)</option>
+                                                        <option value="throw_object">Throw Object (App Inventory)</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type !== 'play_audio' && action.type !== 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Scene (Optional)</label>
+                                                    <select class="action-scene obs-input"
+                                                            x-init="
+                                                                window.ObsDropbox.populate($el, 'scene', null, action.scene);
+                                                                $watch('action.scene', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.scene"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.scene = $el.value;
+                                                                    action.source = '';
+                                                                    action.filter = '';
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type !== 'play_audio' && action.type !== 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Source</label>
+                                                    <select class="action-source obs-input"
+                                                            x-init="
+                                                                $watch('action.scene', (newScene) => {
+                                                                    window.ObsDropbox.populate($el, 'source', newScene, action.source);
+                                                                });
+                                                                window.ObsDropbox.populate($el, 'source', action.scene, action.source);
+                                                                $watch('action.source', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.source"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.source = $el.value;
+                                                                    action.filter = '';
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'play_audio'">
+                                                    <label style="font-size: 10px; color: #ff00ff;">Audio Element</label>
+                                                    <select :value="action.source" class="action-audio-object obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'play_audio') $el.value = action.source; });
+                                                                $watch('action.source', val => { if (action.type === 'play_audio') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'play_audio') $el.value = action.source; }); });
+                                                            "
+                                                            @change="action.source = $event.target.value; saveConfigRaw()">
+                                                        <option value="">Select Audio...</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'audio'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Audio'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #00ffcc;">Object to Throw</label>
+
+                                                        <select :value="action.objectId" class="action-throw-object obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.objectId; });
+                                                                $watch('action.objectId', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.objectId; }); });
+                                                            "
+                                                            @change="action.objectId = $event.target.value; saveConfigRaw()">
+                                                         <option value="">Select Object...</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'image' || o.type === 'snapshot' || o.type === 'liquid' || o.type === 'webgl-water' || o.type === 'webgl-fire' || o.type === 'webgl-lightning'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Object'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <button class="remove-action-btn" title="Remove action" style="background: #ff4444; color: #fff; border: none; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; height: 28px;" @click="deleteObsAction(trig, 'lastCollisionActions', aIndex)">X</button>
+                                            </div>
+                                            
+                                            <div style="display: flex; gap: 5px; align-items: flex-end;">
+                                                <div style="flex: 1;" x-show="action.type === 'toggle_filter' || action.type === 'set_value'">
+                                                    <label style="font-size: 10px; color: #aaa;">Filter</label>
+                                                    <select class="action-filter obs-input"
+                                                            x-init="
+                                                                $watch('action.source', (newSource) => {
+                                                                    window.ObsDropbox.populate($el, 'filter', newSource, action.filter);
+                                                                });
+                                                                window.ObsDropbox.populate($el, 'filter', action.source, action.filter);
+                                                                $watch('action.filter', val => { $el.value = val; });
+                                                            "
+                                                            :value="action.filter"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.filter = $el.value;
+                                                                    action.settingKey = '';
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                        <option value="">Loading...</option>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'set_value'">
+                                                    <label style="font-size: 10px; color: #aaa;">Property / Setting</label>
+                                                    <select class="action-setting-key obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                const updateProps = async () => {
+                                                                    $el.dataset.populating = 'true';
+                                                                    if (action.source && action.filter) {
+                                                                        const props = await fetchFilterProperties(action.source, action.filter);
+                                                                        let opts = '<option value=\'\'>Select Property...</option>';
+                                                                        props.forEach(k => {
+                                                                            opts += `<option value=\'${k}\'>${k}</option>`;
+                                                                        });
+                                                                        $el.innerHTML = opts;
+                                                                        $el.value = action.settingKey || '';
+                                                                    } else {
+                                                                        $el.innerHTML = '<option value=\'\'>Select Filter First...</option>';
+                                                                    }
+                                                                    $el.dataset.populating = 'false';
+                                                                };
+                                                                $watch('action.filter', updateProps);
+                                                                $watch('action.source', updateProps);
+                                                                $watch('action.settingKey', val => { $el.value = val; });
+                                                                updateProps();
+                                                            "
+                                                            :value="action.settingKey"
+                                                            @change="
+                                                                if ($event.isTrusted) {
+                                                                    action.settingKey = $el.value;
+                                                                    saveConfigRaw();
+                                                                }
+                                                            ">
+                                                    </select>
+                                                                                <div style="flex: 1.5;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Target</label>
+
+                                                        <select :value="action.target" class="action-throw-target obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.target || 'avatar'; });
+                                                                $watch('action.target', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.targets', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.target || 'avatar'; }); });
+                                                            "
+                                                            @change="action.target = $event.target.value; saveConfigRaw()">
+                                                         <option value="avatar">Avatar</option>
+                                                        <template x-for="t in config.targets" :key="t.id">
+                                                            <option :value="t.id" x-text="t.name"></option>
+                                                        </template>
+                                                    </select>
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Amount</label>
+                                                    <input type="text" x-model="action.amount" placeholder="1" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Speed (1-10)</label>
+                                                    <input type="number" x-model="action.speed" placeholder="Default" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 1;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #aaa;">Repeat (ms)</label>
+                                                    <input type="number" x-model="action.repeatDelay" placeholder="200" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 2;" x-show="action.type === 'throw_object'">
+                                                    <label style="font-size: 10px; color: #ff00ff;">Collision Sound</label>
+
+                                                        <select :value="action.collisionSound" class="action-throw-sound obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;"
+                                                            x-init="
+                                                                $nextTick(() => { if (action.type === 'throw_object') $el.value = action.collisionSound; });
+                                                                $watch('action.collisionSound', val => { if (action.type === 'throw_object') $el.value = val; });
+                                                                $watch('config.objects', () => { $nextTick(() => { if (action.type === 'throw_object') $el.value = action.collisionSound; }); });
+                                                            "
+                                                            @change="action.collisionSound = $event.target.value; saveConfigRaw()">
+                                                         <option value="">None</option>
+                                                        <template x-for="o in config.objects" :key="o.id">
+                                                            <template x-if="o.type === 'audio'">
+                                                                <option :value="o.id" x-text="o.name || 'Unnamed Audio'"></option>
+                                                            </template>
+                                                        </template>
+                                                    </select>
+                                                </div>
+ 
+                                                <div style="flex: 0.5;">
+                                                    <label style="font-size: 10px; color: #aaa;">Delay (ms)</label>
+                                                    <input type="number" x-model.number="action.delay" placeholder="ms" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 0.5;" x-show="action.type === 'toggle_source' || action.type === 'toggle_filter' || action.type === 'set_crop'">
+                                                    <label style="font-size: 10px; color: #aaa;">Duration (ms)</label>
+                                                    <input type="number" x-model.number="action.duration" placeholder="ms" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" @change="saveConfigRaw()">
+                                                </div>
+                                                
+                                                <div style="flex: 0.5;" x-show="action.type === 'set_value' || action.type === 'set_crop'">
+                                                    <label style="font-size: 10px; color: #00ffcc;" x-text="action.type === 'set_crop' ? 'Target Hitbox' : 'Data Value'"></label>
+
+                                                        <select :value="action.value" class="action-target-hitbox obs-input" style="width: 100%; font-size: 11px; padding: 6px; background: #111; color: #fff; border: 1px solid #555; border-radius: 3px;" x-show="action.type === 'set_crop'"
+                                                             x-init="
+                                                                 $nextTick(() => { if (action.type === 'set_crop') $el.value = action.value || 'avatar'; });
+                                                                 $watch('action.value', val => { if (action.type === 'set_crop') $el.value = val; });
+                                                                 $watch('config.targets', () => { $nextTick(() => { if (action.type === 'set_crop') $el.value = action.value || 'avatar'; }); });
+                                                             "
+                                                             @change="action.value = $event.target.value; saveConfigRaw()">
+                                                         <option value="avatar">Avatar</option>
+                                                        <option value="camera">Camera Main</option>
+                                                        <template x-for="t in config.targets" :key="t.id">
+                                                            <option :value="t.id" x-text="t.name"></option>
+                                                        </template>
+                                                    </select>
+                                                    <input type="text" x-model="action.value" placeholder="Value" style="width: 100%; font-size: 11px; padding: 5px; box-sizing: border-box; border-radius: 3px;" x-show="action.type !== 'set_crop'" @change="saveConfigRaw()">
+                                                </div>"saveConfigRaw()">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                            
+                            <div style="display: flex; justify-content: flex-end; align-items: center;">
+                                 <button class="action-btn test-trig-btn" style="width: 100px; background: #555; color: #fff; font-weight: bold; border: none; padding: 10px; border-radius: 4px; cursor: pointer; margin-right: 10px;" @click="testTrigger(trig)">Test</button>
+                                 <button class="action-btn save-trig-btn" style="width: 150px; background: #ff9933; color: #000; font-weight: bold; border: none; padding: 10px; border-radius: 4px; cursor: pointer;" @click="saveConfigRaw()">Save Trigger</button>
+                            </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <div class="tab-content" :class="{ 'active': activeTab === 'preferences' }" x-show="activeTab === 'preferences'" id="tab-preferences">
+                <h3>Preference</h3>
+                <div class="setting-group">
+                    <label>Max On-Screen Entities</label>
+                    <input type="number" x-model.number="prefMaxEntities" min="1" max="1000">
+                </div>
+                <div class="setting-group">
+                    <label>Item Duration (ms)</label>
+                    <input type="number" x-model.number="prefItemDuration" min="0" max="60000" step="100">
+                </div>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" x-model="prefStickyTracking"> Enable Real-Time Tracking
+                    </label>
+                </div>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" x-model="prefSmoothingEnabled"> Enable Tracking Smoothing
+                    </label>
+                </div>
+
+                <div class="setting-group" style="margin-top: 20px; border-top: 1px solid #333; padding-top: 20px;">
+                    <label>Configuration Backup</label>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button class="action-btn" @click="exportConfig()" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; background: rgba(255, 255, 255, 0.08); color: #fff; border: 1px solid rgba(255, 255, 255, 0.15); box-shadow: none;" onmouseover="this.style.background='rgba(255, 255, 255, 0.15)'" onmouseout="this.style.background='rgba(255, 255, 255, 0.08)'">📤 Export Settings</button>
+                        <button class="action-btn" @click="$refs.importFileInput.click()" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;">📥 Load Settings</button>
+                        <input type="file" x-ref="importFileInput" accept=".json" @change="importConfig($event)" style="display: none;">
+                    </div>
+                </div>
+
+                <div class="setting-group">
+                    <label>System Console</label>
+                    <div id="ui-debug-console"></div>
+                    <button class="action-btn" id="clear-console-btn" @click="document.getElementById('ui-debug-console').innerHTML = ''">Clear Console</button>
+                </div>
+            </div>
+    </div>
+
+    <!-- Load Modules -->
+    <script src="js/launch-ports.js"></script>
+    <script src="js/config.js" defer></script>
+    <script src="js/obs/ObsBridge.js" defer></script>
+    <script src="js/obs/ObsCore.js" defer></script>
+    <script src="js/obs/ObsExecution.js" defer></script>
+    <script src="js/obs/ObsScenes.js" defer></script>
+    <script src="js/obs/init.js" defer></script>
+    <script src="js/obs-dropbox.js" defer></script>
+    <script src="js/websocket.js" defer></script>
+    <script src="js/ui/preferences.js" defer></script>
+    <script src="js/ui/events.js?v=3" defer></script>
+    <script src="js/lib/alpine.min.js" defer></script>
+
+    <!-- Instantiate TriggerSystem on config page -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            window.theatreWs = new TriggerSystem((item) => {
+                console.log("[Config UI] Test spawn callback:", item);
+            });
+        });
+    </script>
+
+    <!-- UI Console Debug Bridge -->
+    <script>
+        (function() {
+            const debugBox = document.getElementById('ui-debug-console');
+            const oldLog = console.log;
+            const oldErr = console.error;
+            const oldWarn = console.warn;
+            
+            function printLine(msg, color) {
+                if(!debugBox) return;
+                const d = document.createElement('div');
+                d.style.color = color;
+                d.style.marginBottom = '4px';
+                d.style.wordBreak = 'break-word';
+                d.innerText = msg;
+                debugBox.appendChild(d);
+                if (debugBox.children.length > 100) debugBox.removeChild(debugBox.firstChild);
+                debugBox.scrollTop = debugBox.scrollHeight;
+            }
+
+            function serializeArg(a) {
+                if (a === null) return "null";
+                if (a instanceof Error) return a.stack || a.message;
+                if (typeof a === 'object') {
+                    if (a.type === 'targets_update' || a.pixel_grid) return "[Tracking Data]";
+                    try { 
+                        let str = JSON.stringify(a); 
+                        return str.length > 300 ? str.substring(0, 300) + "..." : str;
+                    } catch(e) { return String(a); }
+                }
+                return String(a);
+            }
+            
+            console.log = function(...args) {
+                oldLog.apply(console, args);
+                printLine(args.map(serializeArg).join(' '), '#0f0');
+            };
+            console.error = function(...args) {
+                oldErr.apply(console, args);
+                printLine('[ERROR] ' + args.map(serializeArg).join(' '), '#ff4444');
+            };
+            console.warn = function(...args) {
+                oldWarn.apply(console, args);
+                printLine('[WARN] ' + args.map(serializeArg).join(' '), '#ffcc00');
+            };
+        })();
+    </script>
+</body>
+</html>

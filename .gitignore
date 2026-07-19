@@ -1,0 +1,25 @@
+# Python runtime & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE and Tooling
+.vscode/
+.clinerules
+.cursorrules
+
+# Build outputs & caches
+build/
+dist/
+web_cache/
+web_storage/
+*.spec
+*.7z
+
+# Temporary debug images
+debug_*.png

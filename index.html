@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Theatre - Avatar Interaction Overlay</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script>
+        // Bypassing localStorage security errors in sandbox and custom browser environments
+        (function() {
+            try {
+                var test = window.localStorage;
+            } catch (e) {
+                var store = {};
+                Object.defineProperty(window, 'localStorage', {
+                    value: {
+                        getItem: function(key) { return store[key] || null; },
+                        setItem: function(key, val) { store[key] = String(val); },
+                        removeItem: function(key) { delete store[key]; },
+                        clear: function() { store = {}; },
+                        key: function(i) { return Object.keys(store)[i] || null; },
+                        get length() { return Object.keys(store).length; }
+                    },
+                    writable: true,
+                    configurable: true
+                });
+            }
+        })();
+    </script>
+    <script>
+        // Setup PySide6 WebChannel globally for the main overlay
+        window.captureCallbacks = {};
+        if (typeof qt !== 'undefined' && !window.QWebChannelInitDone) {
+            window.QWebChannelInitDone = true;
+            const s = document.createElement('script');
+            s.src = 'qrc:///qtwebchannel/qwebchannel.js';
+            s.onload = () => {
+                new QWebChannel(qt.webChannelTransport, function (channel) {
+                    window.qtBridge = channel.objects.qtBridge;
+                    if (window.qtBridge && window.qtBridge.captured) {
+                        window.qtBridge.captured.connect(function(pid, base64) {
+                            if (window.captureCallbacks[pid]) {
+                                window.captureCallbacks[pid](base64);
+                            }
+                        });
+                    }
+                });
+            };
+            document.head.appendChild(s);
+        }
+    </script>
+</head>
+<body>
+    <div id="media-layer"></div>
+    <canvas id="theatre-canvas"></canvas>
+
+    <!-- Mouseover Status Overlay -->
+    <div id="status-overlay">
+        <div class="status-indicator">
+            <span class="dot" id="backend-status-dot" style="color: #ffaa00;"></span>
+            <span id="backend-status-msg" style="color: #ffaa00;">Backend: Connecting...</span>
+        </div>
+        <div class="status-indicator">
+            <span class="dot" id="obs-status-dot" style="color: #ff4444;"></span>
+            <span id="obs-status-msg" style="color: #ff4444;">OBS: Offline</span>
+        </div>
+        <!-- Debug: live config state + reset button -->
+        <div class="status-indicator" style="margin-top: 4px; gap: 6px;">
+            <span id="debug-config-status" style="font-size: 11px; color: #888;">Config: —</span>
+            <button id="debug-reset-btn" title="Clear config state &amp; force reconnect (Ctrl+Shift+R)"
+                style="background: rgba(255,60,60,0.18); color: #ff8888; border: 1px solid #ff4444;
+                       border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+                       font-family: inherit; line-height: 1.4;">
+                🔄 Reset State
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- Live config status ticker ---
+        function updateDebugConfigStatus() {
+            const el = document.getElementById('debug-config-status');
+            if (!el) return;
+            if (!window.configManager) { el.style.color = '#888'; el.innerText = 'Config: waiting...'; return; }
+            const cfg = window.configManager.IN_MEMORY_CONFIG;
+            const triggers = (cfg.triggers || []).length;
+            const objects  = (cfg.objects  || []).length;
+            if (triggers === 0 && objects === 0) {
+                el.style.color = '#ff8888';
+                el.innerText = 'Config: EMPTY';
+            } else {
+                el.style.color = '#88ffcc';
+                el.innerText = `Config: ${triggers} triggers / ${objects} objects`;
+            }
+        }
+        // Poll every second so we always see the live state
+        setInterval(updateDebugConfigStatus, 1000);
+
+        // --- Reset State ---
+        function theatreResetState() {
+            const btn = document.getElementById('debug-reset-btn');
+            if (btn) { btn.innerText = '⏳ Clearing...'; btn.disabled = true; }
+
+            console.log('[Theatre] *** RESET STATE — wiping config and force-reconnecting WS ***');
+
+            // 1. Wipe in-memory config and localStorage
+            if (window.configManager) {
+                window.configManager.IN_MEMORY_CONFIG = { discordIP: 'localhost', objects: [], hasFloor: true };
+                try { localStorage.removeItem('theatre_objects_v1'); } catch(e) {}
+                try { localStorage.removeItem('theatre_config'); } catch(e) {}
+                console.log('[Theatre] IN_MEMORY_CONFIG cleared. Objects:', window.configManager.IN_MEMORY_CONFIG.objects.length);
+            } else {
+                console.warn('[Theatre] configManager not available yet!');
+            }
+
+            // 2. Reset hasLoadedInitialConfig so the incoming config_state is processed
+            if (window.theatreWs) {
+                window.theatreWs.hasLoadedInitialConfig = false;
+            }
+
+            updateDebugConfigStatus(); // Show "EMPTY" immediately
+
+            // 3. Force close and immediately reconnect using the new forceReconnect() method
+            if (window.theatreWs && typeof window.theatreWs.forceReconnect === 'function') {
+                window.theatreWs.forceReconnect();
+                console.log('[Theatre] forceReconnect() called — watching for config_state...');
+            } else {
+                console.warn('[Theatre] forceReconnect() not available — theatreWs:', window.theatreWs);
+            }
+
+            setTimeout(() => {
+                if (btn) { btn.innerText = '🔄 Reset State'; btn.disabled = false; }
+            }, 3000);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const btn = document.getElementById('debug-reset-btn');
+            if (btn) btn.addEventListener('click', theatreResetState);
+            document.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.shiftKey && e.key === 'R') { e.preventDefault(); theatreResetState(); }
+            });
+        });
+    </script>
+
+
+
+    <!-- Load Modules (Renderer Overlay only needs core rendering & websocket) -->
+    <script src="js/launch-ports.js"></script>
+    <script src="js/config.js" defer></script>
+    <script src="js/obs/ObsBridge.js" defer></script>
+    <script src="js/obs/ObsCore.js" defer></script>
+    <script src="js/obs/ObsExecution.js" defer></script>
+    <script src="js/obs/ObsScenes.js" defer></script>
+    <script src="js/obs/init.js" defer></script>
+    <script src="js/ui/objects/TargetUI.js" defer></script>
+    <script src="js/avatar.js" defer></script>
+    <script src="js/websocket.js" defer></script>
+    <script src="js/engine/AssetManager.js" defer></script>
+    <script src="js/engine/TargetSystem.js" defer></script>
+    <script src="js/engine/SourceCapture.js" defer></script>
+    <script src="js/engine/WebGLWaterStream.js" defer></script>
+    <script src="js/engine/WebGLFireStream.js" defer></script>
+    <!-- Three.js & Post-processing for exact lightning bloom reproduction -->
+    <script src="js/lib/three.min.js?v=3" defer></script>
+    <script src="js/lib/SimplexNoise.js?v=3" defer></script>
+    <script src="js/engine/LightningStrike.js?v=3" defer></script>
+    <script src="js/engine/WebGLLightning.js?v=3" defer></script>
+    <script src="js/engine/Throwable.js?v=3" defer></script>
+    <script src="js/engine/StaticEntity.js?v=3" defer></script>
+    <script src="js/engine/core.js?v=3" defer></script>
+</body>
+</html>
