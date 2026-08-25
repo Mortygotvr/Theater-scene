@@ -129,10 +129,10 @@ def main():
     if HAS_TRAY:
         def create_image():
             paths = [
+                os.path.join(getattr(sys, '_MEIPASS', ''), "icon.png"),
                 os.path.join(getattr(sys, '_MEIPASS', ''), "icon.ico"),
+                os.path.join(BASE_DIR, "icon.png"),
                 os.path.join(BASE_DIR, "icon.ico"),
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico"),
-                os.path.join(os.path.dirname(sys.executable), "icon.ico"),
                 os.path.join(BASE_DIR, "Scene-2.ico"),
             ]
             for p in paths:
@@ -140,8 +140,8 @@ def main():
                     try:
                         im = Image.open(p).convert('RGBA')
                         return im.resize((64, 64), Image.Resampling.LANCZOS)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[Main] Error reading icon from {p}: {e}")
             w, h = 64, 64
             image = Image.new('RGB', (w, h), color=(20, 20, 20))
             d = ImageDraw.Draw(image)
