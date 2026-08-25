@@ -250,7 +250,7 @@ class TriggerSystem {
         };
 
         this.readerWs.onclose = () => {
-            console.log("[Theatre] Reader WS Disconnected. Retrying in 5s...");
+            console.log("[Theatre] Reader WS Disconnected. Retrying in 2.5s...");
             this.readerWsConnected = false;
             updateStatusUI();
             if (!this._forceReconnecting) {
@@ -258,7 +258,7 @@ class TriggerSystem {
                     if (!this.readerWsConnected) {
                         this.connectReader(port, updateStatusUI);
                     }
-                }, 5000);
+                }, 2500);
             }
         };
     }
@@ -294,7 +294,7 @@ class TriggerSystem {
         };
 
         this.sceneWs.onclose = () => {
-            console.log("[Theatre] Scene WS Disconnected. Retrying in 5s...");
+            console.log("[Theatre] Scene WS Disconnected. Retrying in 2.5s...");
             this.sceneWsConnected = false;
             updateStatusUI();
             if (!this._forceReconnecting) {
@@ -302,7 +302,7 @@ class TriggerSystem {
                     if (!this.sceneWsConnected) {
                         this.connectScene(port, updateStatusUI);
                     }
-                }, 5000);
+                }, 2500);
             }
         };
     }
@@ -416,9 +416,25 @@ class TriggerSystem {
                 
                 // If direct OBS connection is enabled, automatically connect using current credentials
                 const ob = window.configManager.IN_MEMORY_CONFIG.obs_bridge;
-                if (window.obsBridge && ob && ob.enabled) {
-                    console.log("[Theatre] Auto-connecting to OBS via backend configuration:", ob.ip, ob.port);
-                    window.obsBridge.connect(ob.ip, ob.port, ob.password);
+                if (window.obsBridge && ob && (ob.enabled !== false)) {
+                    let ip = ob.ip;
+                    let port = ob.port;
+                    let password = ob.password !== undefined && ob.password !== null ? ob.password : (ob.obs_pass || '');
+
+                    if ((!ip || !port) && ob.obs_url) {
+                        try {
+                            const cleanUrl = ob.obs_url.replace(/^ws:\/\//, '').replace(/^http:\/\//, '');
+                            const parts = cleanUrl.split(':');
+                            ip = parts[0] || '127.0.0.1';
+                            port = parts[1] || '4455';
+                        } catch(e) {}
+                    }
+
+                    ip = ip || '127.0.0.1';
+                    port = port || '4455';
+
+                    console.log("[Theatre] Auto-connecting to OBS via backend configuration:", ip, port);
+                    window.obsBridge.connect(ip, port, password);
                 }
             }
             return;

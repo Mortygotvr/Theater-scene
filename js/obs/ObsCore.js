@@ -1,30 +1,57 @@
 ObsBridge.prototype.connect = async function(ip, port, password) {
-        if (this.connected && this.ip === ip && this.port === port && this.password === password) {
-            console.log("[OBS Bridge] Already connected to OBS at " + ip + ":" + port + " - skipping reconnect.");
+        // Normalize IP and port in case a full WebSocket URL or undefined/null was provided
+        let targetIp = ip || '127.0.0.1';
+        let targetPort = port || '4455';
+        let targetPassword = password !== undefined && password !== null ? password : '';
+
+        if (typeof targetIp === 'string' && (targetIp.startsWith('ws://') || targetIp.startsWith('http://') || targetIp.includes(':'))) {
+            try {
+                const clean = targetIp.replace(/^ws:\/\//, '').replace(/^http:\/\//, '');
+                const parts = clean.split(':');
+                targetIp = parts[0] || '127.0.0.1';
+                if (parts[1] && (!port || port === '4455')) {
+                    targetPort = parts[1];
+                }
+            } catch(e) {}
+        }
+
+        if (targetIp === 'localhost') targetIp = '127.0.0.1';
+
+        if (this.connected && this.ip === targetIp && this.port === targetPort && this.password === targetPassword) {
+            console.log("[OBS Bridge] Already connected to OBS at " + targetIp + ":" + targetPort + " - skipping reconnect.");
             return;
         }
-        this.ip = ip;
-        this.port = port;
-        this.password = password;
+
+        this.ip = targetIp;
+        this.port = targetPort;
+        this.password = targetPassword;
+        this._explicitDisconnect = false;
+
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
 
         if (this.ws) {
-            this.ws.close();
+            try { this.ws.close(); } catch(e) {}
             this.ws = null;
         }
 
         const statusMsg = document.getElementById('obs-status-msg');
         if (statusMsg) {
-            statusMsg.innerText = `Connecting to ws://${ip}:${port}...`;
+            statusMsg.innerText = `Connecting to ws://${targetIp}:${targetPort}...`;
             statusMsg.style.color = '#ccc';
         }
 
         try {
-            this.ws = new WebSocket(`ws://${ip}:${port}`);
+            this.ws = new WebSocket(`ws://${targetIp}:${targetPort}`);
         } catch (err) {
+            console.error("[OBS Bridge] Failed to initialize WebSocket:", err);
             if (statusMsg) {
                 statusMsg.innerText = "Invalid WebSocket URL!";
                 statusMsg.style.color = "#ff4444";
             }
+            this._scheduleReconnect();
             return;
         }
 
@@ -46,9 +73,9 @@ ObsBridge.prototype.connect = async function(ip, port, password) {
                     }
                 };
 
-                if (challenge && password) {
+                if (challenge && targetPassword) {
                     try {
-                        const authStr = await this.hashAuth(password, challenge.salt, challenge.challenge);
+                        const authStr = await this.hashAuth(targetPassword, challenge.salt, challenge.challenge);
                         identify.d.authentication = authStr;
                     } catch (hashErr) {
                         console.error("[OBS Bridge] Auth hash failed:", hashErr.message);
@@ -65,6 +92,10 @@ ObsBridge.prototype.connect = async function(ip, port, password) {
             } else if (msg.op === 2) { // Identified
                 console.log("[OBS Bridge] Authenticated successfully");
                 this.connected = true;
+                if (this._reconnectTimer) {
+                    clearTimeout(this._reconnectTimer);
+                    this._reconnectTimer = null;
+                }
                 if (statusMsg) {
                     statusMsg.innerText = "Connected!";
                     statusMsg.style.color = "#00ffcc";
@@ -101,13 +132,40 @@ ObsBridge.prototype.connect = async function(ip, port, password) {
         };
 
         this.ws.onclose = () => {
-            console.log("[OBS Bridge] WebSocket Disconnected");
+            console.log("[OBS Bridge] WebSocket Disconnected. Will retry in 3s...");
             this.connected = false;
             if (statusMsg && statusMsg.innerText === "Connected!") {
                 statusMsg.innerText = "Disconnected";
                 statusMsg.style.color = "#ff4444";
             }
+            this._scheduleReconnect();
         };
+    }
+
+ObsBridge.prototype._scheduleReconnect = function() {
+        if (this._explicitDisconnect) return;
+        if (this._reconnectTimer) return;
+
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            if (!this.connected && !this._explicitDisconnect && this.ip && this.port) {
+                console.log(`[OBS Bridge] Auto-reconnecting to OBS at ws://${this.ip}:${this.port}...`);
+                this.connect(this.ip, this.port, this.password);
+            }
+        }, 3000);
+    }
+
+ObsBridge.prototype.disconnect = function() {
+        this._explicitDisconnect = true;
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        if (this.ws) {
+            try { this.ws.close(); } catch(e) {}
+            this.ws = null;
+        }
+        this.connected = false;
     }
 
 

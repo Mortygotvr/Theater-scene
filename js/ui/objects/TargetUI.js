@@ -67,11 +67,37 @@ class TargetUI {
     _startMaskStream() {
         if (this._maskLoopActive) return;
         this._maskLoopActive = true;
-        const urlParams = new URLSearchParams(window.location.search);
-        let host = urlParams.get('host') || urlParams.get('ip') || window.location.hostname || '127.0.0.1';
-        if (host === 'localhost') host = '127.0.0.1';
-        const streamUrl = `http://${host}:41838/mask.mjpg?t=${Date.now()}`;
-        this._maskImg.src = streamUrl;
+
+        const loadStream = () => {
+            if (!this._maskLoopActive) return;
+            const urlParams = new URLSearchParams(window.location.search);
+            let host = urlParams.get('host') || urlParams.get('ip') || window.location.hostname || '127.0.0.1';
+            if (host === 'localhost') host = '127.0.0.1';
+            const streamUrl = `http://${host}:41838/mask.mjpg?t=${Date.now()}`;
+            this._maskImg.src = streamUrl;
+        };
+
+        this._maskImg.onerror = () => {
+            // Camera tracking MJPEG stream on port 41838 might still be spinning up
+            if (this._maskLoopActive) {
+                if (this._maskRetryTimer) clearTimeout(this._maskRetryTimer);
+                this._maskRetryTimer = setTimeout(() => {
+                    if (this._maskLoopActive) {
+                        console.log('[TargetUI] Retrying MJPEG mask stream connection to port 41838...');
+                        loadStream();
+                    }
+                }, 2500);
+            }
+        };
+
+        this._maskImg.onload = () => {
+            if (this._maskRetryTimer) {
+                clearTimeout(this._maskRetryTimer);
+                this._maskRetryTimer = null;
+            }
+        };
+
+        loadStream();
 
         // If debug is on, show the mask image overlay
         if (this.debugEnabled) {
@@ -93,6 +119,12 @@ class TargetUI {
 
     _stopMaskStream() {
         this._maskLoopActive = false;
+        if (this._maskRetryTimer) {
+            clearTimeout(this._maskRetryTimer);
+            this._maskRetryTimer = null;
+        }
+        this._maskImg.onerror = null;
+        this._maskImg.onload = null;
         this._maskImg.src = '';
         this._maskImg.style.opacity = '0'; // Hide mask overlay
         this.cCtx.clearRect(0, 0, 1920, 1080);
