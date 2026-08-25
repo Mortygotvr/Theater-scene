@@ -120,6 +120,12 @@ def main():
 
     if HAS_TRAY:
         def create_image():
+            icon_path = os.path.join(BASE_DIR, "icon.ico")
+            if os.path.exists(icon_path):
+                try:
+                    return Image.open(icon_path)
+                except Exception:
+                    pass
             w, h = 64, 64
             image = Image.new('RGB', (w, h), color=(20, 20, 20))
             d = ImageDraw.Draw(image)
