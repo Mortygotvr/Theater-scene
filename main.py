@@ -5,6 +5,14 @@ import threading
 import time
 import webbrowser
 
+if sys.platform == 'win32':
+    import ctypes
+    try:
+        myappid = 'mortygotvr.theaterscene.orchestrator.101'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception:
+        pass
+
 def get_base_dir():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
