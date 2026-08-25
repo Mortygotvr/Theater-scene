@@ -128,12 +128,20 @@ def main():
 
     if HAS_TRAY:
         def create_image():
-            icon_path = os.path.join(BASE_DIR, "icon.ico")
-            if os.path.exists(icon_path):
-                try:
-                    return Image.open(icon_path)
-                except Exception:
-                    pass
+            paths = [
+                os.path.join(getattr(sys, '_MEIPASS', ''), "icon.ico"),
+                os.path.join(BASE_DIR, "icon.ico"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico"),
+                os.path.join(os.path.dirname(sys.executable), "icon.ico"),
+                os.path.join(BASE_DIR, "Scene-2.ico"),
+            ]
+            for p in paths:
+                if p and os.path.exists(p):
+                    try:
+                        im = Image.open(p).convert('RGBA')
+                        return im.resize((64, 64), Image.Resampling.LANCZOS)
+                    except Exception:
+                        pass
             w, h = 64, 64
             image = Image.new('RGB', (w, h), color=(20, 20, 20))
             d = ImageDraw.Draw(image)
